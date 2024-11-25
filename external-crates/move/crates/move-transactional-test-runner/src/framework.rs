@@ -735,6 +735,9 @@ where
     >(path)?
     .into_iter()
     .collect::<VecDeque<_>>();
+
+    println!("tasks {:?}", tasks[0]);
+
     assert!(!tasks.is_empty());
     let num_tasks = tasks.len();
     writeln!(

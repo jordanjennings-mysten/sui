@@ -19,8 +19,8 @@ use sui_core::authority::authority_per_epoch_store::CertLockGuard;
 use sui_core::authority::authority_test_utils::send_and_confirm_transaction_with_execution_error;
 use sui_core::authority::AuthorityState;
 use sui_json_rpc::authority_state::StateRead;
-use sui_json_rpc_types::DevInspectResults;
 use sui_json_rpc_types::EventFilter;
+use sui_json_rpc_types::{DevInspectResults, DryRunTransactionBlockResponse};
 use sui_storage::key_value_store::TransactionKeyValueStore;
 use sui_types::base_types::ObjectID;
 use sui_types::base_types::SuiAddress;
@@ -42,18 +42,18 @@ use sui_types::storage::ObjectStore;
 use sui_types::storage::ReadStore;
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait;
 use sui_types::sui_system_state::SuiSystemStateTrait;
-use sui_types::transaction::InputObjects;
 use sui_types::transaction::Transaction;
 use sui_types::transaction::TransactionDataAPI;
 use sui_types::transaction::TransactionKind;
+use sui_types::transaction::{InputObjects, TransactionData};
 use test_adapter::{SuiTestAdapter, PRE_COMPILED};
 
 #[cfg_attr(not(msim), tokio::main)]
 #[cfg_attr(msim, msim::main)]
 pub async fn run_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let (_guard, _filter_handle) = telemetry_subscribers::TelemetryConfig::new()
-        .with_env()
-        .init();
+    // let (_guard, _filter_handle) = telemetry_subscribers::TelemetryConfig::new()
+    //     .with_env()
+    //     .init();
     run_test_impl::<SuiTestAdapter>(path, Some(std::sync::Arc::new(PRE_COMPILED.clone()))).await?;
     Ok(())
 }
@@ -95,6 +95,12 @@ pub trait TransactionalAdapter: Send + Sync + ReadStore {
         address: SuiAddress,
         amount: u64,
     ) -> anyhow::Result<TransactionEffects>;
+
+    async fn dry_run_transaction_block(
+        &self,
+        transaction_block: TransactionData,
+        transaction_digest: TransactionDigest,
+    ) -> SuiResult<DryRunTransactionBlockResponse>;
 
     async fn dev_inspect_transaction_block(
         &self,
@@ -167,6 +173,17 @@ impl TransactionalAdapter for ValidatorWithFullnode {
             self.validator
                 .prepare_certificate_for_benchmark(&tx, input_objects, &epoch_store)?;
         Ok((effects, error))
+    }
+
+    async fn dry_run_transaction_block(
+        &self,
+        transaction_block: TransactionData,
+        transaction_digest: TransactionDigest,
+    ) -> SuiResult<DryRunTransactionBlockResponse> {
+        self.fullnode
+            .dry_exec_transaction(transaction_block, transaction_digest)
+            .await
+            .map(|result| result.0)
     }
 
     async fn dev_inspect_transaction_block(
@@ -404,6 +421,14 @@ impl TransactionalAdapter for Simulacrum<StdRng, PersistedStore> {
         _gas_price: Option<u64>,
     ) -> SuiResult<DevInspectResults> {
         unimplemented!("dev_inspect_transaction_block not supported in simulator mode")
+    }
+
+    async fn dry_run_transaction_block(
+        &self,
+        _transaction_block: TransactionData,
+        _transaction_digest: TransactionDigest,
+    ) -> SuiResult<DryRunTransactionBlockResponse> {
+        unimplemented!("dry_run_transaction_block not supported in simulator mode")
     }
 
     async fn query_tx_events_asc(

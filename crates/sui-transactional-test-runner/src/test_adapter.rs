@@ -745,10 +745,15 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                 gas_price,
                 gas_payment,
                 dev_inspect,
+                dry_run,
                 inputs,
             }) => {
                 if dev_inspect && self.is_simulator() {
                     bail!("Dev inspect is not supported on simulator mode");
+                }
+
+                if dry_run && dev_inspect {
+                    return bail!("Cannot set both dev-inspect and dry-run");
                 }
 
                 let inputs = self.compiled_state().resolve_args(inputs)?;
@@ -786,7 +791,8 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                         )
                     })
                     .collect::<anyhow::Result<Vec<Command>>>()?;
-                let summary = if !dev_inspect {
+
+                let summary = if !dev_inspect && !dry_run {
                     let gas_budget = gas_budget.unwrap_or(DEFAULT_GAS_BUDGET);
                     let gas_price = gas_price.unwrap_or(self.gas_price);
                     let transaction = self.sign_sponsor_txn(
@@ -805,6 +811,16 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                         },
                     );
                     self.execute_txn(transaction).await?
+                } else if dry_run {
+                    let sender_address = self.get_sender(sender).address;
+                    let transaction = TransactionData::new_programmable(
+                        sender_address,
+                        vec![],
+                        ProgrammableTransaction { inputs, commands },
+                        0,
+                        0,
+                    );
+                    self.dry_run(transaction).await?
                 } else {
                     assert!(
                         gas_budget.is_none(),
@@ -1554,6 +1570,23 @@ impl<'a> SuiTestAdapter {
                 ))))
             }
         }
+    }
+
+    async fn dry_run(&mut self, transaction: TransactionData) -> anyhow::Result<TxnSummary> {
+        let digest = transaction.digest();
+        let results = self.executor.dry_run_transaction_block(transaction, digest);
+
+        Ok(TxnSummary {
+            created: vec![],
+            mutated: vec![],
+            unwrapped: vec![],
+            deleted: vec![],
+            unwrapped_then_deleted: vec![],
+            wrapped: vec![],
+            unchanged_shared: vec![],
+            events: vec![],
+            gas_summary: GasCostSummary::default(),
+        })
     }
 
     async fn dev_inspect(

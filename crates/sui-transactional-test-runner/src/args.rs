@@ -115,6 +115,8 @@ pub struct ProgrammableTransactionCommand {
     pub gas_payment: Option<FakeID>,
     #[clap(long = "dev-inspect")]
     pub dev_inspect: bool,
+    #[clap(long = "dry-run")]
+    pub dry_run: bool,
     #[clap(
         long = "inputs",
         value_parser = ParsedValue::<SuiExtraValueArgs>::parse,
