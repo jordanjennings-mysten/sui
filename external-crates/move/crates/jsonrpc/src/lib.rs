@@ -10,6 +10,7 @@
 // and should maybe be made into its own crate?
 
 pub mod client;
+pub mod client_sync;
 pub mod types;
 
 pub use client::Endpoint;

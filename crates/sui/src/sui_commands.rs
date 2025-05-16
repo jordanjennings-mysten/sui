@@ -442,14 +442,14 @@ impl SuiCommand {
             }
             SuiCommand::GenesisCeremony(cmd) => run(cmd),
             SuiCommand::KeyTool {
-                keystore_path,
+                keystore_path: _,
                 json,
                 cmd,
             } => {
-                let keystore_path =
-                    keystore_path.unwrap_or(sui_config_dir()?.join(SUI_KEYSTORE_FILENAME));
-                let mut keystore = Keystore::from(FileBasedKeystore::new(&keystore_path)?);
-                cmd.execute(&mut keystore).await?.print(!json);
+                // TODO?
+                let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+                cmd.execute(&mut config.keystore).await?.print(!json);
                 Ok(())
             }
             SuiCommand::Client {

@@ -35,6 +35,8 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use sui_config::{sui_config_dir, Config, PersistedConfig, SUI_CLIENT_CONFIG};
+use sui_keys::external::External;
 use sui_keys::key_derive::generate_new_key;
 use sui_keys::key_identity::KeyIdentity;
 use sui_keys::keypair_file::{
@@ -42,6 +44,7 @@ use sui_keys::keypair_file::{
     write_keypair_to_file,
 };
 use sui_keys::keystore::{AccountKeystore, Keystore};
+use sui_sdk::sui_client_config::SuiClientConfig;
 use sui_types::base_types::SuiAddress;
 use sui_types::committee::EpochId;
 use sui_types::crypto::{
@@ -60,6 +63,7 @@ use tabled::builder::Builder;
 use tabled::settings::Rotate;
 use tabled::settings::{object::Rows, Modify, Width};
 use tracing::info;
+
 #[cfg(test)]
 #[path = "unit_tests/keytool_tests.rs"]
 mod keytool_tests;
@@ -81,7 +85,9 @@ pub enum KeyToolCommand {
     /// Hex private key format import and export are both deprecated in
     /// Sui Wallet and Sui CLI Keystore. Use `sui keytool import` if you
     /// wish to import a key to Sui Keystore.
-    Convert { value: String },
+    Convert {
+        value: String,
+    },
     /// Given a Base64 encoded transaction bytes, decode its components. If a signature is provided,
     /// verify the signature against the transaction and output the result.
     DecodeOrVerifyTx {
@@ -149,7 +155,21 @@ pub enum KeyToolCommand {
     /// [enum SuiKeyPair] (Base64 encoded of 33-byte `flag || privkey`) or `type AuthorityKeyPair`
     /// (Base64 encoded `privkey`). This prints out the account keypair as Base64 encoded `flag || privkey`,
     /// the network keypair, worker keypair, protocol keypair as Base64 encoded `privkey`.
-    LoadKeypair { file: PathBuf },
+    LoadKeypair {
+        file: PathBuf,
+    },
+
+    ExternalGenerate {
+        signer: Option<String>,
+    },
+    ExternalListKeys {
+        signer: Option<String>,
+    },
+    /// Add keys to be index
+    ExternalAddExisting {
+        signer: Option<String>,
+    },
+
     /// To MultiSig Sui Address. Pass in a list of all public keys `flag || pk` in Base64.
     /// See `keytool list` for example public keys.
     MultiSigAddress {
@@ -193,7 +213,9 @@ pub enum KeyToolCommand {
     /// Read the content at the provided file path. The accepted format can be
     /// [enum SuiKeyPair] (Base64 encoded of 33-byte `flag || privkey`) or `type AuthorityKeyPair`
     /// (Base64 encoded `privkey`). It prints its Base64 encoded public key and the key scheme flag.
-    Show { file: PathBuf },
+    Show {
+        file: PathBuf,
+    },
     /// Create signature using the private key for the given address (or its alias) in sui keystore.
     /// Any signature commits to a [struct IntentMessage] consisting of the Base64 encoded
     /// of the BCS serialized transaction bytes itself and its intent. If intent is absent,
@@ -225,7 +247,9 @@ pub enum KeyToolCommand {
     /// This takes [enum SuiKeyPair] of Base64 encoded of 33-byte `flag || privkey`). It
     /// outputs the keypair into a file at the current directory where the address is the filename,
     /// and prints out its Sui address, Base64 encoded public key, the key scheme, and the key scheme flag.
-    Unpack { keypair: String },
+    Unpack {
+        keypair: String,
+    },
 
     /// Given the max_epoch, generate an OAuth url, ask user to paste the redirect with id_token, call salt server, then call the prover server,
     /// create a test transaction, use the ephemeral key to sign and execute it by assembling to a serialized zkLogin signature.
@@ -467,6 +491,7 @@ pub enum CommandOutput {
     Export(ExportedKey),
     List(Vec<Key>),
     LoadKeypair(KeypairData),
+    ExternalConfig(String),
     MultiSigAddress(MultiSigAddress),
     MultiSigCombinePartialSig(MultiSigCombinePartialSig),
     MultiSigCombinePartialSigLegacy(MultiSigCombinePartialSigLegacyOutput),
@@ -625,9 +650,9 @@ impl KeyToolCommand {
             } => {
                 if Hex::decode(&input_string).is_ok() {
                     return Err(anyhow!(
-                        "Sui Keystore and Sui Wallet no longer support importing 
-                    private key as Hex, if you are sure your private key is encoded in Hex, use 
-                    `sui keytool convert $HEX` to convert first then import the Bech32 encoded 
+                        "Sui Keystore and Sui Wallet no longer support importing
+                    private key as Hex, if you are sure your private key is encoded in Hex, use
+                    `sui keytool convert $HEX` to convert first then import the Bech32 encoded
                     private key starting with `suiprivkey`."
                     ));
                 }
@@ -733,6 +758,58 @@ impl KeyToolCommand {
                 };
                 CommandOutput::LoadKeypair(output)
             }
+
+            KeyToolCommand::ExternalConfig {
+                set_signer,
+                remove_signer: _remove_signer,
+            } => {
+                let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+
+                if let Some(signer) = set_signer {
+                    let signer = External::new(signer);
+                    config.keystore = Keystore::External(signer);
+                    config.persisted(&client_path).save()?;
+                    CommandOutput::ExternalConfig("External signer set successfully".to_string())
+                } else {
+                    CommandOutput::ExternalConfig(match config.keystore {
+                        Keystore::External(external) => format!("signer: {}", external.signer),
+                        _ => "Not using an external signer".to_string(),
+                    })
+                }
+            }
+
+            KeyToolCommand::ExternalListKeys => match keystore {
+                Keystore::External(external) => {
+                    let keys = external.keys();
+                    let mut output = "".to_string();
+                    for key in keys {
+                        output.push_str(&format!("{}\n", key));
+                    }
+
+                    CommandOutput::ExternalConfig(output)
+                }
+                _ => {
+                    CommandOutput::ExternalConfig("Not configured for external signer".to_string())
+                }
+            },
+
+            KeyToolCommand::ExternalCreateKey => match keystore {
+                Keystore::External(external) => {
+                    let key = external.create_key(None)?;
+
+                    let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                    let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+
+                    config.keystore = Keystore::External(External::from_existing(external));
+                    config.persisted(&client_path).save()?;
+
+                    CommandOutput::ExternalConfig(format!("Created key: {}", key,))
+                }
+                _ => {
+                    CommandOutput::ExternalConfig("Not configured for external signer".to_string())
+                }
+            },
 
             KeyToolCommand::MultiSigAddress {
                 threshold,

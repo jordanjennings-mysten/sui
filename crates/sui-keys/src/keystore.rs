@@ -1,10 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::external::External;
 use crate::key_derive::{derive_key_pair_from_path, generate_new_key};
 use crate::key_identity::KeyIdentity;
 use crate::random_names::{random_name, random_names};
-use anyhow::{anyhow, bail, ensure, Context};
+use anyhow::{anyhow, bail, ensure, Context, Error};
 use bip32::DerivationPath;
 use bip39::{Language, Mnemonic, Seed};
 use rand::{rngs::StdRng, SeedableRng};
@@ -29,7 +30,9 @@ use sui_types::crypto::{
 pub enum Keystore {
     File(FileBasedKeystore),
     InMem(InMemKeystore),
+    External(External),
 }
+
 #[enum_dispatch]
 pub trait AccountKeystore: Send + Sync {
     /// Generate a new keypair and add it into the keystore.
@@ -39,6 +42,7 @@ pub trait AccountKeystore: Send + Sync {
         alias: Option<String>,
         derivation_path: Option<DerivationPath>,
         word_length: Option<String>,
+        signer:
     ) -> Result<(SuiAddress, String, SignatureScheme), anyhow::Error> {
         let (address, kp, scheme, phrase) =
             generate_new_key(key_scheme, derivation_path, word_length)?;
@@ -163,6 +167,10 @@ impl Display for Keystore {
             Keystore::InMem(_) => {
                 writeln!(writer, "Keystore Type : InMem")?;
                 write!(f, "{}", writer)
+            }
+            Keystore::External(external) => {
+                writeln!(writer, "Keystore Type : External")?;
+                write!(writer, "{}", external.signer)
             }
         }
     }
@@ -612,7 +620,7 @@ impl InMemKeystore {
     }
 }
 
-fn validate_alias(alias: &str) -> Result<String, anyhow::Error> {
+pub(crate) fn validate_alias(alias: &str) -> Result<String, anyhow::Error> {
     let re = Regex::new(r"^[A-Za-z][A-Za-z0-9-_\.]*$")
         .map_err(|_| anyhow!("Cannot build the regex needed to validate the alias naming"))?;
     let alias = alias.trim();
