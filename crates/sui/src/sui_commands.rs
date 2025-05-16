@@ -53,8 +53,10 @@ use sui_graphql_rpc::{
     test_infra::cluster::start_graphql_server_with_fn_rpc,
 };
 
+use crate::external_signer::ExternalKeysCommand;
 use move_core_types::account_address::AccountAddress;
 use serde_json::json;
+use sui_keys::key_derive::generate_new_key;
 use sui_keys::keypair_file::read_key;
 use sui_keys::keystore::{AccountKeystore, FileBasedKeystore, Keystore};
 use sui_move::manage_package::resolve_lock_file_path;
@@ -298,6 +300,18 @@ pub enum SuiCommand {
         #[clap(subcommand)]
         cmd: KeyToolCommand,
     },
+    /// Manage keys on external signers
+    ExternalKeys {
+        /// Sets the file storing the state of our user accounts (an empty one will be created if missing)
+        #[clap(long)]
+        keystore_path: Option<PathBuf>,
+        /// Return command outputs in json format
+        #[clap(long, global = true)]
+        json: bool,
+        /// Subcommands.
+        #[clap(subcommand)]
+        cmd: ExternalKeysCommand,
+    },
     /// Client for interacting with the Sui network.
     #[clap(name = "client")]
     Client {
@@ -442,14 +456,27 @@ impl SuiCommand {
             }
             SuiCommand::GenesisCeremony(cmd) => run(cmd),
             SuiCommand::KeyTool {
-                keystore_path,
+                keystore_path: _,
                 json,
                 cmd,
             } => {
-                let keystore_path =
-                    keystore_path.unwrap_or(sui_config_dir()?.join(SUI_KEYSTORE_FILENAME));
-                let mut keystore = Keystore::from(FileBasedKeystore::new(&keystore_path)?);
-                cmd.execute(&mut keystore).await?.print(!json);
+                let config_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut context = WalletContext::new(&config_path)?;
+
+                cmd.execute(&mut context).await?.print(!json);
+                Ok(())
+            }
+            SuiCommand::ExternalKeys {
+                keystore_path: _,
+                json,
+                cmd,
+            } => {
+                let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+
+                cmd.execute(config.external_keys.as_mut())
+                    .await?
+                    .print(!json);
                 Ok(())
             }
             SuiCommand::Client {
@@ -708,7 +735,7 @@ impl SuiCommand {
                 );
                 for node_config in network_config.validator_configs() {
                     let account_kp = node_config.account_key_pair.keypair();
-                    context.add_account(None, account_kp.copy());
+                    context.add_account(None, account_kp.copy()).await;
                 }
 
                 let context = context;
@@ -740,7 +767,7 @@ impl SuiCommand {
                         1000000000,
                     )
                     .unwrap();
-                    let signed_tx = context.sign_transaction(&tx);
+                    let signed_tx = context.sign_transaction(&tx).await;
                     tasks.push(context.execute_transaction_must_succeed(signed_tx));
                 }
                 futures::future::join_all(tasks).await;
@@ -1026,9 +1053,13 @@ async fn start(
             let keystore_path = config_dir.join(SUI_KEYSTORE_FILENAME);
             let mut keystore = Keystore::from(FileBasedKeystore::new(&keystore_path).unwrap());
             let address: SuiAddress = kp.public().into();
-            keystore.import(None, SuiKeyPair::Ed25519(kp)).unwrap();
+            keystore
+                .import(None, SuiKeyPair::Ed25519(kp))
+                .await
+                .unwrap();
             SuiClientConfig {
                 keystore,
+                external_keys: None,
                 envs: vec![SuiEnv {
                     alias: "localnet".to_string(),
                     rpc: fullnode_url,
@@ -1160,9 +1191,9 @@ async fn genesis(
                 let path = sui_config_dir.join(SUI_BENCHMARK_GENESIS_GAS_KEYSTORE_FILENAME);
                 let mut keystore = FileBasedKeystore::new(&path)?;
                 for gas_key in GenesisConfig::benchmark_gas_keys(ips.len()) {
-                    keystore.import(None, gas_key)?;
+                    keystore.import(None, gas_key).await?;
                 }
-                keystore.save()?;
+                keystore.save().await?;
 
                 // Make a new genesis config from the provided ip addresses.
                 GenesisConfig::new_for_benchmarks(&ips)
@@ -1214,7 +1245,9 @@ async fn genesis(
 
     let mut keystore = FileBasedKeystore::new(&keystore_path)?;
     for key in &network_config.account_keys {
-        keystore.import(None, SuiKeyPair::Ed25519(key.copy()))?;
+        keystore
+            .import(None, SuiKeyPair::Ed25519(key.copy()))
+            .await?;
     }
     let active_address = keystore.addresses().pop();
 
@@ -1422,7 +1455,9 @@ async fn prompt_if_no_config(
                     Err(e) => return Err(anyhow!("{e}")),
                 }
             };
-            let (new_address, phrase, scheme) = keystore.generate(key_scheme, None, None, None)?;
+
+            let (new_address, key_pair, scheme, phrase) = generate_new_key(key_scheme, None, None)?;
+            keystore.import(None, key_pair).await?;
             let alias = keystore.get_alias(&new_address)?;
             println!(
                 "Generated new keypair and alias for address with scheme {:?} [{alias}: {new_address}]",
@@ -1432,6 +1467,7 @@ async fn prompt_if_no_config(
             let alias = env.alias.clone();
             SuiClientConfig {
                 keystore,
+                external_keys: None,
                 envs: vec![env],
                 active_address: Some(new_address),
                 active_env: Some(alias),

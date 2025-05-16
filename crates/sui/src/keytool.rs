@@ -42,6 +42,7 @@ use sui_keys::keypair_file::{
     write_keypair_to_file,
 };
 use sui_keys::keystore::{AccountKeystore, Keystore};
+use sui_sdk::wallet_context::WalletContext;
 use sui_types::base_types::SuiAddress;
 use sui_types::committee::EpochId;
 use sui_types::crypto::{
@@ -60,6 +61,7 @@ use tabled::builder::Builder;
 use tabled::settings::Rotate;
 use tabled::settings::{object::Rows, Modify, Width};
 use tracing::info;
+
 #[cfg(test)]
 #[path = "unit_tests/keytool_tests.rs"]
 mod keytool_tests;
@@ -150,6 +152,7 @@ pub enum KeyToolCommand {
     /// (Base64 encoded `privkey`). This prints out the account keypair as Base64 encoded `flag || privkey`,
     /// the network keypair, worker keypair, protocol keypair as Base64 encoded `privkey`.
     LoadKeypair { file: PathBuf },
+
     /// To MultiSig Sui Address. Pass in a list of all public keys `flag || pk` in Base64.
     /// See `keytool list` for example public keys.
     MultiSigAddress {
@@ -480,13 +483,20 @@ pub enum CommandOutput {
 }
 
 impl KeyToolCommand {
-    pub async fn execute(self, keystore: &mut Keystore) -> Result<CommandOutput, anyhow::Error> {
+    pub async fn execute(
+        self,
+        context: &mut WalletContext,
+    ) -> Result<CommandOutput, anyhow::Error> {
         let cmd_result = Ok(match self {
             KeyToolCommand::Alias {
                 old_alias,
                 new_alias,
             } => {
-                let new_alias = keystore.update_alias(&old_alias, new_alias.as_deref())?;
+                let keystore: &mut Keystore =
+                    context.get_keystore_by_identity_mut(&KeyIdentity::Alias(old_alias.clone()))?;
+                let new_alias = keystore
+                    .update_alias(&old_alias, new_alias.as_deref())
+                    .await?;
                 CommandOutput::Alias(AliasUpdate {
                     old_alias,
                     new_alias,
@@ -625,9 +635,9 @@ impl KeyToolCommand {
             } => {
                 if Hex::decode(&input_string).is_ok() {
                     return Err(anyhow!(
-                        "Sui Keystore and Sui Wallet no longer support importing 
-                    private key as Hex, if you are sure your private key is encoded in Hex, use 
-                    `sui keytool convert $HEX` to convert first then import the Bech32 encoded 
+                        "Sui Keystore and Sui Wallet no longer support importing
+                    private key as Hex, if you are sure your private key is encoded in Hex, use
+                    `sui keytool convert $HEX` to convert first then import the Bech32 encoded
                     private key starting with `suiprivkey`."
                     ));
                 }
@@ -636,11 +646,11 @@ impl KeyToolCommand {
                     Ok(skp) => {
                         info!("Importing Bech32 encoded private key to keystore");
                         let mut key = Key::from(&skp);
-                        keystore.import(alias.clone(), skp)?;
+                        context.config.keystore.import(alias.clone(), skp).await?;
 
                         let alias = match alias {
                             Some(x) => x,
-                            None => keystore.get_alias(&key.sui_address)?,
+                            None => context.config.keystore.get_alias(&key.sui_address)?,
                         };
 
                         key.alias = Some(alias);
@@ -648,18 +658,22 @@ impl KeyToolCommand {
                     }
                     Err(_) => {
                         info!("Importing mneomonics to keystore");
-                        let sui_address = keystore.import_from_mnemonic(
-                            &input_string,
-                            key_scheme,
-                            derivation_path,
-                            alias.clone(),
-                        )?;
-                        let skp = keystore.export(&sui_address)?;
+                        let sui_address = context
+                            .config
+                            .keystore
+                            .import_from_mnemonic(
+                                &input_string,
+                                key_scheme,
+                                derivation_path,
+                                alias.clone(),
+                            )
+                            .await?;
+                        let skp = context.config.keystore.export(&sui_address)?;
                         let mut key = Key::from(skp);
 
                         let alias = match alias {
                             Some(x) => x,
-                            None => keystore.get_alias(&key.sui_address)?,
+                            None => context.config.keystore.get_alias(&key.sui_address)?,
                         };
 
                         key.alias = Some(alias);
@@ -668,10 +682,10 @@ impl KeyToolCommand {
                 }
             }
             KeyToolCommand::Export { key_identity } => {
-                let address = keystore.get_by_identity(key_identity)?;
-                let skp = keystore.export(&address)?;
+                let address = context.config.keystore.get_by_identity(&key_identity)?;
+                let skp = context.config.keystore.export(&address)?;
                 let mut key = Key::from(skp);
-                key.alias = keystore.get_alias(&key.sui_address).ok();
+                key.alias = context.config.keystore.get_alias(&key.sui_address).ok();
                 let key = ExportedKey {
                     exported_private_key: skp
                         .encode()
@@ -681,15 +695,27 @@ impl KeyToolCommand {
                 CommandOutput::Export(key)
             }
             KeyToolCommand::List { sort_by_alias } => {
-                let mut keys = keystore
+                let external_keys = context
+                    .config
+                    .external_keys
+                    .as_ref()
+                    .map(|k| k.entries())
+                    .unwrap_or_else(|| vec![])
+                    .into_iter();
+
+                let mut keys: Vec<Key> = context
+                    .config
+                    .keystore
                     .entries()
                     .into_iter()
+                    .chain(external_keys)
                     .map(|pk| {
                         let mut key = Key::from(pk);
-                        key.alias = keystore.get_alias(&key.sui_address).ok();
+                        key.alias = context.config.keystore.get_alias(&key.sui_address).ok();
                         key
                     })
-                    .collect::<Vec<Key>>();
+                    .collect();
+
                 if sort_by_alias {
                     keys.sort_unstable();
                 }
@@ -830,7 +856,7 @@ impl KeyToolCommand {
                 data,
                 intent,
             } => {
-                let address = keystore.get_by_identity(address)?;
+                let address = context.get_identity_address(Some(address))?;
                 let intent = intent.unwrap_or_else(Intent::sui_transaction);
                 let intent_clone = intent.clone();
                 let msg: TransactionData =
@@ -842,8 +868,9 @@ impl KeyToolCommand {
                 let mut hasher = DefaultHash::default();
                 hasher.update(bcs::to_bytes(&intent_msg)?);
                 let digest = hasher.finalize().digest;
-                let sui_signature =
-                    keystore.sign_secure(&address, &intent_msg.value, intent_msg.intent)?;
+                let sui_signature = context
+                    .sign_secure(&address.into(), &intent_msg.value, intent_msg.intent)
+                    .await?;
                 CommandOutput::Sign(SignData {
                     sui_address: address,
                     raw_tx_data: data,
@@ -1013,7 +1040,7 @@ impl KeyToolCommand {
                 let pk = skp.public();
                 let ephemeral_key_identifier: SuiAddress = (&skp.public()).into();
                 println!("Ephemeral key identifier: {ephemeral_key_identifier}");
-                keystore.import(None, skp)?;
+                context.config.keystore.import(None, skp).await?;
 
                 let mut eph_pk_bytes = vec![pk.flag()];
                 eph_pk_bytes.extend(pk.as_ref());
@@ -1176,7 +1203,7 @@ impl KeyToolCommand {
                     &jwt_randomness,
                     &kp_bigint.to_string(),
                     ephemeral_key_identifier,
-                    keystore,
+                    &mut context.config.keystore,
                     &network,
                     test_multisig,
                     sign_with_sk,
@@ -1200,7 +1227,7 @@ impl KeyToolCommand {
                     &jwt_randomness,
                     &kp_bigint,
                     ephemeral_key_identifier,
-                    keystore,
+                    &mut context.config.keystore,
                     &network,
                     test_multisig,
                     sign_with_sk,
