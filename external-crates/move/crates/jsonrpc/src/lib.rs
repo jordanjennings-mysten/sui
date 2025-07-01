@@ -14,3 +14,4 @@ pub mod client_sync;
 pub mod types;
 
 pub use client::Endpoint;
+pub use client_sync::Endpoint as EndpointSync;

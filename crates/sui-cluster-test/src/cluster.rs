@@ -370,6 +370,7 @@ pub fn new_wallet_context_from_cluster(
         .unwrap();
     SuiClientConfig {
         keystore,
+        external_keys: None,
         envs: vec![SuiEnv {
             alias: "localnet".to_string(),
             rpc: fullnode_url.into(),
