@@ -168,9 +168,8 @@ impl Display for Keystore {
                 writeln!(writer, "Keystore Type : InMem")?;
                 write!(f, "{}", writer)
             }
-            Keystore::External(external) => {
-                writeln!(writer, "Keystore Type : External")?;
-                write!(writer, "{}", external.signer)
+            Keystore::External(_external) => {
+                writeln!(writer, "Keystore Type : External")
             }
         }
     }
@@ -525,7 +524,15 @@ impl AccountKeystore for InMemKeystore {
         Ok(())
     }
 
+<<<<<<< HEAD
     fn remove(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {
+=======
+    fn create_key(&mut self, _alias: Option<String>, _signer: String) -> Result<SuiAddress, Error> {
+        Err(anyhow!("Not supported for in-memory keystore"))
+    }
+
+    fn remove_key(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {
+>>>>>>> 0f79b00bba (wip serialize to separate file, rework commands to use new external_keys)
         self.aliases.remove(&address);
         self.keys.remove(&address);
         Ok(())

@@ -449,7 +449,10 @@ impl SuiCommand {
                 // TODO?
                 let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
                 let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
-                cmd.execute(&mut config.keystore).await?.print(!json);
+
+                cmd.execute(&mut config.keystore, config.external_keys.as_mut())
+                    .await?
+                    .print(!json);
                 Ok(())
             }
             SuiCommand::Client {
@@ -1029,6 +1032,7 @@ async fn start(
             keystore.import(None, SuiKeyPair::Ed25519(kp)).unwrap();
             SuiClientConfig {
                 keystore,
+                external_keys: None,
                 envs: vec![SuiEnv {
                     alias: "localnet".to_string(),
                     rpc: fullnode_url,
@@ -1432,6 +1436,7 @@ async fn prompt_if_no_config(
             let alias = env.alias.clone();
             SuiClientConfig {
                 keystore,
+                external_keys: None,
                 envs: vec![env],
                 active_address: Some(new_address),
                 active_env: Some(alias),

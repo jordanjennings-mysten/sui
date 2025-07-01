@@ -35,8 +35,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use sui_config::{sui_config_dir, Config, PersistedConfig, SUI_CLIENT_CONFIG};
-use sui_keys::external::External;
 use sui_keys::key_derive::generate_new_key;
 use sui_keys::key_identity::KeyIdentity;
 use sui_keys::keypair_file::{
@@ -44,7 +42,6 @@ use sui_keys::keypair_file::{
     write_keypair_to_file,
 };
 use sui_keys::keystore::{AccountKeystore, Keystore};
-use sui_sdk::sui_client_config::SuiClientConfig;
 use sui_types::base_types::SuiAddress;
 use sui_types::committee::EpochId;
 use sui_types::crypto::{
@@ -160,14 +157,15 @@ pub enum KeyToolCommand {
     },
 
     ExternalGenerate {
-        signer: Option<String>,
+        signer: String,
     },
     ExternalListKeys {
-        signer: Option<String>,
+        signer: String,
     },
     /// Add keys to be index
     ExternalAddExisting {
-        signer: Option<String>,
+        key_id: String,
+        signer: String,
     },
 
     /// To MultiSig Sui Address. Pass in a list of all public keys `flag || pk` in Base64.
@@ -505,7 +503,11 @@ pub enum CommandOutput {
 }
 
 impl KeyToolCommand {
-    pub async fn execute(self, keystore: &mut Keystore) -> Result<CommandOutput, anyhow::Error> {
+    pub async fn execute(
+        self,
+        keystore: &mut Keystore,
+        external_keys: Option<&mut Keystore>,
+    ) -> Result<CommandOutput, anyhow::Error> {
         let cmd_result = Ok(match self {
             KeyToolCommand::Alias {
                 old_alias,
@@ -759,57 +761,109 @@ impl KeyToolCommand {
                 CommandOutput::LoadKeypair(output)
             }
 
-            KeyToolCommand::ExternalConfig {
-                set_signer,
-                remove_signer: _remove_signer,
-            } => {
-                let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
-                let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+            // KeyToolCommand::ExternalConfig {
+            //     set_signer,
+            //     remove_signer: _remove_signer,
+            // } => {
+            //     let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+            //     let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+            //
+            //     if let Some(signer) = set_signer {
+            //         let signer = External::new(signer);
+            //         config.keystore = Keystore::External(signer);
+            //         config.persisted(&client_path).save()?;
+            //         CommandOutput::ExternalConfig("External signer set successfully".to_string())
+            //     } else {
+            //         CommandOutput::ExternalConfig(match config.keystore {
+            //             Keystore::External(external) => format!("signer: {}", external.signer),
+            //             _ => "Not using an external signer".to_string(),
+            //         })
+            //     }
+            // }
+            KeyToolCommand::ExternalGenerate { signer } => {
+                // TODO extract external keys as a helper function
+                let Some(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
+                let Keystore::External(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
 
-                if let Some(signer) = set_signer {
-                    let signer = External::new(signer);
-                    config.keystore = Keystore::External(signer);
-                    config.persisted(&client_path).save()?;
-                    CommandOutput::ExternalConfig("External signer set successfully".to_string())
-                } else {
-                    CommandOutput::ExternalConfig(match config.keystore {
-                        Keystore::External(external) => format!("signer: {}", external.signer),
-                        _ => "Not using an external signer".to_string(),
-                    })
-                }
+                external_keys.create_key(None, signer.clone())?;
+                external_keys.save()?;
+
+                CommandOutput::ExternalConfig("".to_string())
+
+                // Keystore::External(external) => {
+                //     let key = external.create_key(None)?;
+                //
+                //     let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                //     let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+                //
+                //     config.keystore = Keystore::External(External::from_existing(external));
+                //     config.persisted(&client_path).save()?;
+                //
+                //     CommandOutput::ExternalConfig(format!("Created key: {}", key,))
+                // }
+                // _ => {
+                //     CommandOutput::ExternalConfig("Not configured for external signer".to_string())
+                // }
             }
 
-            KeyToolCommand::ExternalListKeys => match keystore {
-                Keystore::External(external) => {
-                    let keys = external.keys();
-                    let mut output = "".to_string();
-                    for key in keys {
-                        output.push_str(&format!("{}\n", key));
-                    }
+            KeyToolCommand::ExternalListKeys { signer } => {
+                // TODO extract external keys as a helper function
+                let Some(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
+                let Keystore::External(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
 
-                    CommandOutput::ExternalConfig(output)
-                }
-                _ => {
-                    CommandOutput::ExternalConfig("Not configured for external signer".to_string())
-                }
-            },
+                external_keys.keys(signer.clone())?;
 
-            KeyToolCommand::ExternalCreateKey => match keystore {
-                Keystore::External(external) => {
-                    let key = external.create_key(None)?;
+                CommandOutput::ExternalConfig("".to_string())
 
-                    let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
-                    let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+                // match keystore {
+                // Keystore::External(external) => {
+                //     let keys = external.keys(signer);
+                //     let mut output = "".to_string();
+                //     for key in keys {
+                //         output.push_str(&format!("{}\n", key));
+                //     }
+                //
+                //     CommandOutput::ExternalConfig(output)
+                // }
+                // _ => {
+                //     CommandOutput::ExternalConfig("Not configured for external signer".to_string())
+                // }
+            }
 
-                    config.keystore = Keystore::External(External::from_existing(external));
-                    config.persisted(&client_path).save()?;
+            KeyToolCommand::ExternalAddExisting { key_id, signer } => {
+                // TODO extract external keys as a helper function
+                let Some(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
+                let Keystore::External(external_keys) = external_keys else {
+                    return Err(anyhow!("Keystore is not configured for external signer"));
+                };
+                external_keys.add_existing(key_id, signer.clone())?;
 
-                    CommandOutput::ExternalConfig(format!("Created key: {}", key,))
-                }
-                _ => {
-                    CommandOutput::ExternalConfig("Not configured for external signer".to_string())
-                }
-            },
+                CommandOutput::ExternalConfig("".to_string())
+                // match keystore {
+                //     Keystore::External(external) => {
+                //         let keys = external.add_existing_keys()?;
+                //         // let mut output = "".to_string();
+                //         // for key in keys {
+                //         //     output.push_str(&format!("{}\n", key));
+                //         // }
+                //         //
+                //         // CommandOutput::ExternalConfig(output)
+                //     }
+                //     _ => {
+                //         CommandOutput::ExternalConfig("Not configured for external signer".to_string())
+                //     }
+                // }
+            }
 
             KeyToolCommand::MultiSigAddress {
                 threshold,

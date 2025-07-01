@@ -270,6 +270,8 @@ pub async fn split_coin_digest(
 pub fn retrieve_wallet() -> Result<WalletContext, anyhow::Error> {
     let wallet_conf = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
     let keystore_path = sui_config_dir()?.join(SUI_KEYSTORE_FILENAME);
+    // TODO
+    let external_keystore_path = sui_config_dir()?.join(SUI_KEYSTORE_FILENAME);
 
     // check if a wallet exists and if not, create a wallet and a sui client config
     if !keystore_path.exists() {

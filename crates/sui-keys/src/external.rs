@@ -5,42 +5,44 @@ use anyhow::{anyhow, bail};
 use base64;
 use bcs;
 use fastcrypto::traits::EncodeDecodeBase64;
+use jsonrpc::client_sync::Endpoint;
 use mockall::{automock, predicate::*};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
 use shared_crypto::intent::Intent;
 use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::process::Command;
 // use std::process::Command;
 use sui_types::base_types::SuiAddress;
 use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
 
-#[derive(Serialize, Deserialize)]
 pub struct External {
-    /// active external binary signer
-    pub signer: String,
     /// alias to address mapping
     pub aliases: BTreeMap<SuiAddress, Alias>,
     // address to (pubkey, signer, key_id)
-    pub keys: BTreeMap<SuiAddress, (PublicKey, String, String)>,
-    #[serde(skip_deserializing)]
-    #[serde(skip_serializing)]
-    #[serde(default = "default_runner")]
+    pub keys: BTreeMap<SuiAddress, Key>,
     command_runner: Box<dyn CommandRunner>,
+    path: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Key {
+    pub public_key: PublicKey,
+    pub signer: String,
+    pub key_id: String,
 }
 
 #[automock]
 pub trait CommandRunner: Send + Sync {
     fn run(&self, command: &str, args: Vec<String>) -> Result<JsonValue, Error>;
 }
-
-fn default_runner() -> Box<dyn CommandRunner> {
-    Box::new(StdCommandRunner {})
-}
+//
+// fn default_runner() -> Box<dyn CommandRunner> {
+//     Box::new(StdCommandRunner {})
+// }
 
 struct StdCommandRunner;
-
-use jsonrpc::client_sync::Endpoint;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Response {
@@ -95,30 +97,30 @@ impl CommandRunner for StdCommandRunner {
 }
 
 impl External {
-    pub fn new(signer: String) -> Self {
-        Self {
-            signer,
+    pub fn new(path: &PathBuf) -> Result<Self, anyhow::Error> {
+        Ok(Self {
             aliases: Default::default(),
             keys: Default::default(),
             command_runner: Box::new(StdCommandRunner),
-        }
+            path: Some(path.clone()),
+        })
     }
 
     pub fn from_existing(old: &mut Self) -> Self {
         Self {
-            signer: old.signer.clone(),
             aliases: old.aliases.clone(),
             keys: old.keys.clone(),
             command_runner: Box::new(StdCommandRunner),
+            path: old.path.clone(),
         }
     }
 
     pub fn new_for_test(command_runner: Box<dyn CommandRunner>) -> Self {
         Self {
-            signer: "sui-key-tool".to_string(),
             aliases: Default::default(),
             keys: Default::default(),
             command_runner,
+            path: None,
         }
     }
 
@@ -126,27 +128,78 @@ impl External {
         self.command_runner.run(command, args)
     }
 
-    pub fn keys(&self) -> Vec<String> {
-        let result = self
-            .exec(&self.signer, vec!["--list-keys".to_string()])
-            .unwrap();
+    pub fn add_existing(&mut self, signer: String, key_id: String) -> Result<(), Error> {
+        let keys = self.keys(signer.clone()).unwrap();
+
+        let key: Key = keys
+            .into_iter()
+            .find(|k| k.key_id == key_id)
+            .ok_or_else(|| anyhow!("Key with id {} not found for signer {}", key_id, signer))?;
+
+        self.keys.insert(
+            (&key.public_key).into(),
+            Key {
+                public_key: key.public_key,
+                signer,
+                key_id,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn keys(&self, signer: String) -> Result<Vec<Key>, Error> {
+        let result = self.exec(&signer, vec!["--list-keys".to_string()]).unwrap();
         println!("result: {:?}", result);
 
         // array of strings
-        let keys = result["keys"]
+        let keys_json = result["keys"]
             .as_array()
             .ok_or_else(|| anyhow!("Failed to parse keys"))
             .unwrap();
 
-        let mut key_ids = Vec::new();
-        for key in keys {
-            let key_id = key["key"]
+        let mut keys = Vec::new();
+        for key_json in keys_json {
+            let key_id = key_json["key"]
                 .as_str()
                 .ok_or_else(|| anyhow!("Failed to parse key id"))
                 .unwrap();
-            key_ids.push(key_id.to_string());
+            keys.push(Key {
+                public_key: PublicKey::decode_base64(key_json["public_key"].as_str().unwrap())
+                    .map_err(|e| anyhow!("Failed to decode public key: {}", e))?,
+                signer: signer.clone(),
+                key_id: key_id.to_string(),
+            });
         }
-        key_ids
+        Ok(keys)
+    }
+
+    pub fn save(&self) -> Result<(), Error> {
+        todo!()
+    }
+}
+
+impl Serialize for External {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(
+            self.path
+                .as_ref()
+                .unwrap_or(&PathBuf::default())
+                .to_str()
+                .unwrap_or(""),
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for External {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        External::new(&PathBuf::from(String::deserialize(deserializer)?)).map_err(D::Error::custom)
     }
 }
 
@@ -155,9 +208,8 @@ impl AccountKeystore for External {
         Err(anyhow!("Not supported for external keys."))
     }
 
-    fn create_key(&mut self, _alias: Option<String>) -> Result<SuiAddress, Error> {
-        // TODO errors
-        let res = self.exec(&self.signer, vec!["--create-key".to_string()])?;
+    fn create_key(&mut self, _alias: Option<String>, signer: String) -> Result<SuiAddress, Error> {
+        let res = self.exec(&signer, vec!["--create-key".to_string()])?;
         println!("result: {:?}", res);
 
         // key_id is the unique identifier for the key for the given signer
@@ -174,7 +226,11 @@ impl AccountKeystore for External {
 
         self.keys.insert(
             address,
-            (public_key, self.signer.clone(), key_id.to_string()),
+            Key {
+                public_key,
+                signer: signer.clone(),
+                key_id: key_id.to_string(),
+            },
         );
         Ok(address)
     }
@@ -185,8 +241,8 @@ impl AccountKeystore for External {
 
     fn keys(&self) -> Vec<PublicKey> {
         let mut keys = Vec::new();
-        for (_, (public, _, _)) in &self.keys {
-            keys.push(public.clone());
+        for (_, Key { public_key, .. }) in &self.keys {
+            keys.push(public_key.clone());
         }
         keys
     }
@@ -198,16 +254,15 @@ impl AccountKeystore for External {
     fn sign_hashed(&self, address: &SuiAddress, msg: &[u8]) -> Result<Signature, signature::Error> {
         // TODO this should verify that the key id matches the address
 
-        let key_id = self
+        let Key { key_id, signer, .. } = self
             .keys
             .get(address)
             .ok_or_else(|| signature::Error::from_source(anyhow!("Key not found")))?
-            .2
             .clone();
 
         let result = self
             .exec(
-                &self.signer,
+                &signer,
                 vec![
                     "sign-hashed".to_string(),
                     "--key-id".to_string(),
@@ -240,17 +295,16 @@ impl AccountKeystore for External {
     {
         // TODO this should verify that the key id matches the address
 
-        let key_id = self
+        let Key { key_id, signer, .. } = self
             .keys
             .get(address)
             .ok_or_else(|| signature::Error::from_source(anyhow!("Key not found")))?
-            .2
             .clone();
 
         println!("SIGN FOR {} = {}", key_id, address);
         let result = self
             .exec(
-                &self.signer,
+                &signer,
                 vec![
                     "--sign".to_string(),
                     "--key-id".to_string(),
