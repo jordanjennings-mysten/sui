@@ -8,11 +8,11 @@ use fastcrypto::traits::EncodeDecodeBase64;
 use jsonrpc::client_sync::Endpoint;
 use mockall::{automock, predicate::*};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use shared_crypto::intent::Intent;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 // use std::process::Command;
 use sui_types::base_types::SuiAddress;
 use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
@@ -35,7 +35,7 @@ pub struct Key {
 
 #[automock]
 pub trait CommandRunner: Send + Sync {
-    fn run(&self, command: &str, args: Vec<String>) -> Result<JsonValue, Error>;
+    fn run(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error>;
 }
 //
 // fn default_runner() -> Box<dyn CommandRunner> {
@@ -43,29 +43,24 @@ pub trait CommandRunner: Send + Sync {
 // }
 
 struct StdCommandRunner;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Response {
-    id: String,
-    result: JsonValue,
-}
-
 impl CommandRunner for StdCommandRunner {
-    fn run(&self, command: &str, args: Vec<String>) -> Result<JsonValue, Error> {
+    fn run(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error> {
         // spawn tokio
-        let mut cmd = Command::new(command).spawn().unwrap();
+        let mut cmd = Command::new(command)
+            .arg("call")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
 
         // spawn tokio process
         let mut endpoint = Endpoint::new(
             cmd.stdout.take().expect("No stdout"),
-            cmd.stdin.take().expect("no stdin"),
+            cmd.stdin.take().expect("No stdin"),
         );
 
-        let res: Response = endpoint.call("run", args.clone())?;
-        if res.id != "run" {
-            return Err(anyhow!("Unexpected response id: {}", res.id));
-        }
-        if res.result.is_null() {
+        let res: JsonValue = endpoint.call(method, args)?;
+        if res.is_null() {
             return Err(anyhow!("Command returned null result"));
         }
 
@@ -81,26 +76,41 @@ impl CommandRunner for StdCommandRunner {
             )));
         }
 
-        // TODO?
-        let result = res.result;
-        println!("result: {:?}", result);
-
-        if result["error"].is_string() {
-            return Err(anyhow!(
-                "Command failed with error: {}",
-                result["error"].as_str().unwrap()
-            ));
+        if !res["error"].is_null() {
+            return Err(anyhow!("Command failed with error: {:?}", res["error"]));
         }
 
-        Ok(result)
+        Ok(res)
     }
 }
 
 impl External {
     pub fn new(path: &PathBuf) -> Result<Self, anyhow::Error> {
+        let mut aliases_store_path = path.clone();
+        aliases_store_path.set_extension("aliases");
+        let aliases: BTreeMap<SuiAddress, Alias> = if aliases_store_path.exists() {
+            let aliases_store: String = std::fs::read_to_string(&aliases_store_path)
+                .map_err(|e| anyhow!("Failed to read aliases file: {}", e))?;
+            serde_json::from_str(&aliases_store)
+                .map_err(|e| anyhow!("Failed to parse aliases file: {}", e))?
+        } else {
+            Default::default()
+        };
+
+        let mut keys_store_path = path.clone();
+        keys_store_path.set_extension("keys");
+        let keys: BTreeMap<SuiAddress, Key> = if keys_store_path.exists() {
+            let keys_store: String = std::fs::read_to_string(&keys_store_path)
+                .map_err(|e| anyhow!("Failed to read keys file: {}", e))?;
+            serde_json::from_str(&keys_store)
+                .map_err(|e| anyhow!("Failed to parse keys file: {}", e))?
+        } else {
+            Default::default()
+        };
+
         Ok(Self {
-            aliases: Default::default(),
-            keys: Default::default(),
+            aliases,
+            keys,
             command_runner: Box::new(StdCommandRunner),
             path: Some(path.clone()),
         })
@@ -124,8 +134,8 @@ impl External {
         }
     }
 
-    pub fn exec(&self, command: &str, args: Vec<String>) -> Result<JsonValue, Error> {
-        self.command_runner.run(command, args)
+    pub fn exec(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error> {
+        self.command_runner.run(command, method, args)
     }
 
     pub fn add_existing(&mut self, signer: String, key_id: String) -> Result<(), Error> {
@@ -148,7 +158,7 @@ impl External {
     }
 
     pub fn keys(&self, signer: String) -> Result<Vec<Key>, Error> {
-        let result = self.exec(&signer, vec!["--list-keys".to_string()]).unwrap();
+        let result = self.exec(&signer, "keys", json![null]).unwrap();
         println!("result: {:?}", result);
 
         // array of strings
@@ -173,8 +183,40 @@ impl External {
         Ok(keys)
     }
 
+    pub fn save_aliases(&self) -> Result<(), Error> {
+        if let Some(path) = &self.path {
+            let aliases_store: String = serde_json::to_string_pretty(&self.aliases)
+                .map_err(|e| anyhow!("Serialization error: {}", e))?;
+
+            let mut path = path.clone();
+            path.set_extension("aliases");
+            std::fs::write(path, aliases_store)
+                .map_err(|e| anyhow!("Failed to write to file: {}", e))?;
+            Ok(())
+        } else {
+            Err(anyhow!("Path is not set for External keystore"))
+        }
+    }
+
+    pub fn save_keys(&self) -> Result<(), Error> {
+        if let Some(path) = &self.path {
+            let keys_store: String = serde_json::to_string_pretty(&self.keys)
+                .map_err(|e| anyhow!("Serialization error: {}", e))?;
+
+            let mut path = path.clone();
+            path.set_extension("keys");
+            std::fs::write(path, keys_store)
+                .map_err(|e| anyhow!("Failed to write to file: {}", e))?;
+            Ok(())
+        } else {
+            Err(anyhow!("Path is not set for External keystore"))
+        }
+    }
+
     pub fn save(&self) -> Result<(), Error> {
-        todo!()
+        self.save_aliases()?;
+        self.save_keys()?;
+        Ok(())
     }
 }
 
@@ -209,8 +251,7 @@ impl AccountKeystore for External {
     }
 
     fn create_key(&mut self, _alias: Option<String>, signer: String) -> Result<SuiAddress, Error> {
-        let res = self.exec(&signer, vec!["--create-key".to_string()])?;
-        println!("result: {:?}", res);
+        let res = self.exec(&signer, "create_key", json![null])?;
 
         // key_id is the unique identifier for the key for the given signer
         let key_id = res["key_id"]
@@ -219,7 +260,6 @@ impl AccountKeystore for External {
         let public_key = res["public_key"]
             .as_str()
             .ok_or_else(|| anyhow!("Failed to parse public key"))?;
-        println!("public {}", public_key);
         let public_key = PublicKey::decode_base64(public_key)
             .map_err(|e| anyhow!("Failed to decode public key: {}", e))?;
         let address: SuiAddress = (&public_key).into();
@@ -254,6 +294,7 @@ impl AccountKeystore for External {
     fn sign_hashed(&self, address: &SuiAddress, msg: &[u8]) -> Result<Signature, signature::Error> {
         // TODO this should verify that the key id matches the address
 
+        println!("KEYS: {:?}", self.keys);
         let Key { key_id, signer, .. } = self
             .keys
             .get(address)
@@ -263,14 +304,8 @@ impl AccountKeystore for External {
         let result = self
             .exec(
                 &signer,
-                vec![
-                    "sign-hashed".to_string(),
-                    "--key-id".to_string(),
-                    key_id.to_string(),
-                    "--msg".to_string(),
-                    #[allow(deprecated)]
-                    base64::encode(msg),
-                ],
+                "sign_hashed",
+                json![{"keyId": key_id, "msg": base64::encode(msg)}],
             )
             .map_err(|e| signature::Error::from_source(e))?;
 
@@ -295,29 +330,28 @@ impl AccountKeystore for External {
     {
         // TODO this should verify that the key id matches the address
 
+        println!("KEYS: {:?}", self.keys);
         let Key { key_id, signer, .. } = self
             .keys
             .get(address)
             .ok_or_else(|| signature::Error::from_source(anyhow!("Key not found")))?
             .clone();
 
-        println!("SIGN FOR {} = {}", key_id, address);
         let result = self
             .exec(
                 &signer,
-                vec![
-                    "--sign".to_string(),
-                    "--key-id".to_string(),
-                    key_id.to_string(),
-                    "--msg".to_string(),
-                    #[allow(deprecated)]
-                    base64::encode(bcs::to_bytes(msg).unwrap()),
-                    "--intent".to_string(),
-                    #[allow(deprecated)]
-                    base64::encode(serde_json::to_vec(&intent).unwrap()),
-                ],
+                "sign",
+                json![{
+                    "key_id": key_id,
+                    "msg": base64::encode(bcs::to_bytes(msg).unwrap()),
+                    "intent": serde_json::to_value(&intent).unwrap()
+                }],
             )
             .map_err(|e| signature::Error::from_source(anyhow!("Failed to sign message: {}", e)))?;
+
+        let result = result
+            .as_object()
+            .ok_or_else(|| signature::Error::from_source(anyhow!("Failed to parse result")))?;
 
         let signature = result["signature"]
             .as_str()

@@ -3306,7 +3306,9 @@ pub(crate) async fn dry_run_or_execute_or_serialize(
     } else {
         let mut signatures = vec![context
             .config
-            .keystore
+            .external_keys
+            .as_mut()
+            .unwrap()
             .sign_secure(&signer, &tx_data, Intent::sui_transaction())?
             .into()];
 
@@ -3315,7 +3317,9 @@ pub(crate) async fn dry_run_or_execute_or_serialize(
                 signatures.push(
                     context
                         .config
-                        .keystore
+                        .external_keys
+                        .as_mut()
+                        .unwrap()
                         .sign_secure(&gas_sponsor, &tx_data, Intent::sui_transaction())?
                         .into(),
                 );
