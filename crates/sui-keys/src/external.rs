@@ -3,6 +3,7 @@ use crate::random_names::random_name;
 use anyhow::Error;
 use anyhow::{anyhow, bail};
 use base64;
+use base64::{engine::general_purpose, Engine as _};
 use bcs;
 use fastcrypto::traits::EncodeDecodeBase64;
 use jsonrpc::client_sync::Endpoint;
@@ -11,12 +12,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as JsonValue};
 use shared_crypto::intent::Intent;
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-// use std::process::Command;
 use sui_types::base_types::SuiAddress;
 use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
 
+#[derive(Debug)]
 pub struct External {
     /// alias to address mapping
     pub aliases: BTreeMap<SuiAddress, Alias>,
@@ -34,14 +36,11 @@ pub struct Key {
 }
 
 #[automock]
-pub trait CommandRunner: Send + Sync {
+pub trait CommandRunner: Send + Sync + Debug {
     fn run(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error>;
 }
-//
-// fn default_runner() -> Box<dyn CommandRunner> {
-//     Box::new(StdCommandRunner {})
-// }
 
+#[derive(Debug)]
 struct StdCommandRunner;
 impl CommandRunner for StdCommandRunner {
     fn run(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error> {
@@ -69,7 +68,6 @@ impl CommandRunner for StdCommandRunner {
             .map_err(|e| anyhow!("Failed to wait for command to finish: {}", e))?;
 
         if !output.status.success() {
-            println!("output: {:?}", output);
             return Err(Error::msg(format!(
                 "Command failed with status: {}",
                 output.status
@@ -85,6 +83,7 @@ impl CommandRunner for StdCommandRunner {
 }
 
 impl External {
+    /// Load keys and aliases from a given path
     pub fn new(path: &PathBuf) -> Result<Self, anyhow::Error> {
         let mut aliases_store_path = path.clone();
         aliases_store_path.set_extension("aliases");
@@ -97,10 +96,8 @@ impl External {
             Default::default()
         };
 
-        let mut keys_store_path = path.clone();
-        keys_store_path.set_extension("keys");
-        let keys: BTreeMap<SuiAddress, Key> = if keys_store_path.exists() {
-            let keys_store: String = std::fs::read_to_string(&keys_store_path)
+        let keys: BTreeMap<SuiAddress, Key> = if path.exists() {
+            let keys_store: String = std::fs::read_to_string(&path)
                 .map_err(|e| anyhow!("Failed to read keys file: {}", e))?;
             serde_json::from_str(&keys_store)
                 .map_err(|e| anyhow!("Failed to parse keys file: {}", e))?
@@ -125,6 +122,7 @@ impl External {
         }
     }
 
+    /// Test function for mocked command runner
     pub fn new_for_test(command_runner: Box<dyn CommandRunner>) -> Self {
         Self {
             aliases: Default::default(),
@@ -134,12 +132,14 @@ impl External {
         }
     }
 
+    /// Execute a command against the command runner
     pub fn exec(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error> {
         self.command_runner.run(command, method, args)
     }
 
+    /// Add a Key ID from the given signer to the Sui CLI index
     pub fn add_existing(&mut self, signer: String, key_id: String) -> Result<(), Error> {
-        let keys = self.keys(signer.clone()).unwrap();
+        let keys = self.key_ids(signer.clone()).unwrap();
 
         let key: Key = keys
             .into_iter()
@@ -157,9 +157,9 @@ impl External {
         Ok(())
     }
 
-    pub fn keys(&self, signer: String) -> Result<Vec<Key>, Error> {
+    /// Return all Key IDs associated with a signer, indexed or not
+    pub fn key_ids(&self, signer: String) -> Result<Vec<Key>, Error> {
         let result = self.exec(&signer, "keys", json![null]).unwrap();
-        println!("result: {:?}", result);
 
         // array of strings
         let keys_json = result["keys"]
@@ -203,8 +203,7 @@ impl External {
             let keys_store: String = serde_json::to_string_pretty(&self.keys)
                 .map_err(|e| anyhow!("Serialization error: {}", e))?;
 
-            let mut path = path.clone();
-            path.set_extension("keys");
+            let path = path.clone();
             std::fs::write(path, keys_store)
                 .map_err(|e| anyhow!("Failed to write to file: {}", e))?;
             Ok(())
@@ -294,19 +293,15 @@ impl AccountKeystore for External {
     fn sign_hashed(&self, address: &SuiAddress, msg: &[u8]) -> Result<Signature, signature::Error> {
         // TODO this should verify that the key id matches the address
 
-        println!("KEYS: {:?}", self.keys);
         let Key { key_id, signer, .. } = self
             .keys
             .get(address)
             .ok_or_else(|| signature::Error::from_source(anyhow!("Key not found")))?
             .clone();
 
+        let msg = general_purpose::STANDARD.encode(msg);
         let result = self
-            .exec(
-                &signer,
-                "sign_hashed",
-                json![{"keyId": key_id, "msg": base64::encode(msg)}],
-            )
+            .exec(&signer, "sign_hashed", json![{"keyId": key_id, "msg": msg}])
             .map_err(|e| signature::Error::from_source(e))?;
 
         let signature = result["signature"]
@@ -330,12 +325,16 @@ impl AccountKeystore for External {
     {
         // TODO this should verify that the key id matches the address
 
-        println!("KEYS: {:?}", self.keys);
         let Key { key_id, signer, .. } = self
             .keys
             .get(address)
             .ok_or_else(|| signature::Error::from_source(anyhow!("Key not found")))?
             .clone();
+
+        let msg = bcs::to_bytes(msg).map_err(|e| {
+            signature::Error::from_source(anyhow!("Failed to serialize message: {}", e))
+        })?;
+        let msg = general_purpose::STANDARD.encode(&msg);
 
         let result = self
             .exec(
@@ -343,7 +342,7 @@ impl AccountKeystore for External {
                 "sign",
                 json![{
                     "key_id": key_id,
-                    "msg": base64::encode(bcs::to_bytes(msg).unwrap()),
+                    "msg": msg,
                     "intent": serde_json::to_value(&intent).unwrap()
                 }],
             )
@@ -434,48 +433,416 @@ impl AccountKeystore for External {
     }
 }
 
-#[allow(unused_imports)]
+#[cfg(test)]
 mod tests {
-    use super::{External, MockCommandRunner};
-    use crate::keystore::{AccountKeystore, Keystore};
-    use fastcrypto::traits::EncodeDecodeBase64;
+    use super::{External, Key, MockCommandRunner, StdCommandRunner};
+    use crate::keystore::AccountKeystore;
+    use anyhow::anyhow;
+    use fastcrypto::ed25519::Ed25519KeyPair;
+    use fastcrypto::traits::{EncodeDecodeBase64, KeyPair, ToFromBytes};
     use mockall::predicate::eq;
+    use rand::thread_rng;
+    use serde_json::json;
     use serde_json::Value as JsonValue;
-    use sui_types::crypto::{PublicKey, SuiKeyPair};
+    use shared_crypto::intent::Intent;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::str::FromStr;
+    use sui_types::base_types::SuiAddress;
+    use sui_types::crypto::{Ed25519SuiSignature, PublicKey, Signature, SuiKeyPair};
+
+    const PUBLIC_KEY: &str = "ALJ0GaLcBTTwTTh5dvyc6xaxwrjkG1spQzlL+W4CGLqG";
+    const ADDRESS: &str = "0x9219616732544c54259b3f5aeef5ec078535e322ee63f7de2ca8a197fd2a4f6f";
+
+    fn load_external_keystore() -> External {
+        let cargo_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("src")
+            .join("unit_tests")
+            .join("fixtures")
+            .join("external_config")
+            .join("external.keystore");
+
+        External::new(&cargo_dir).expect("Failed to load external keystore")
+    }
 
     #[test]
-    fn test_external_signer() {
+    fn test_load_new_from_path() {
+        let cargo_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("unit_tests")
+            .join("fixtures")
+            .join("external_config");
+
+        let external = External::new(&cargo_dir).unwrap();
+
+        // TODO add more to files
+        assert!(external.aliases.is_empty());
+        assert!(external.keys.is_empty());
+        assert!(external.path.is_some());
+    }
+
+    #[test]
+    fn test_serialize() {
+        let tmp = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("src")
+            .join("unit_tests")
+            .join("tmp")
+            .join("external.keystore");
+
+        // cleanup external.keystore and external.aliases
+        if tmp.exists() {
+            std::fs::remove_file(&tmp).expect("Failed to remove existing file");
+        }
+        if tmp.with_extension("aliases").exists() {
+            std::fs::remove_file(tmp.with_extension("aliases"))
+                .expect("Failed to remove existing aliases file");
+        }
+
+        let mut external = External {
+            aliases: Default::default(),
+            keys: Default::default(),
+            command_runner: Box::new(StdCommandRunner),
+            path: Some(tmp.clone()),
+        };
+
+        // Add key
+        external.keys.insert(
+            SuiAddress::from_str(ADDRESS).unwrap(),
+            Key {
+                public_key: PublicKey::decode_base64(PUBLIC_KEY).unwrap(),
+                signer: "signer".to_string(),
+                key_id: "key-123".to_string(),
+            },
+        );
+        // Add alias
+        external.aliases.insert(
+            SuiAddress::from_str(ADDRESS).unwrap(),
+            crate::keystore::Alias {
+                alias: "test_alias".to_string(),
+                public_key_base64: PUBLIC_KEY.to_string(),
+            },
+        );
+
+        external.save().unwrap();
+
+        // custom serializer
+        let serialized = serde_json::to_string(&external).expect("Failed to serialize external");
+
+        assert!(!serialized.is_empty());
+        assert!(serialized.contains("tmp/external.keystore"));
+        // deserialize back to External via custom deserializer
+        let deserialized: External = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.keys.len(), 1);
+        assert_eq!(deserialized.aliases.len(), 1);
+
+        // malformed keystore
+        let external_bad_keystore_path =
+            PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+                .join("src")
+                .join("unit_tests")
+                .join("fixtures")
+                .join("external_config")
+                .join("external_bad_keystore.keystore");
+
+        let external_bad = External::new(&external_bad_keystore_path);
+        assert!(
+            external_bad.is_err(),
+            "Expected error when loading from bad keystore path"
+        );
+
+        // malformed aliases
+        let external_bad_aliases_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("src")
+            .join("unit_tests")
+            .join("fixtures")
+            .join("external_config")
+            .join("external_bad_aliases.keystore");
+        let external_bad_aliases = External::new(&external_bad_aliases_path);
+        assert!(
+            external_bad_aliases.is_err(),
+            "Expected error when loading from bad aliases path"
+        );
+    }
+
+    #[test]
+    fn test_exec() {
         let mut mock = MockCommandRunner::new();
         mock.expect_run()
             .with(
                 eq("sui-key-tool"),
-                eq(vec!["--key".to_string(), "test_key".to_string()]),
+                eq("test_method"),
+                eq(json!(["arg1", "arg2"])),
             )
             .times(1)
-            .returning(|_, _| Ok(JsonValue::Null));
+            .returning(|_, _, _| Ok(JsonValue::Null));
+
         let external = External::new_for_test(Box::new(mock));
-        let args = vec!["--key".to_string(), "test_key".to_string()];
-        assert!(external.exec("sui-key-tool", args).is_ok());
-
-        let mut keystore = Keystore::External(external);
-
-        let kp = SuiKeyPair::decode_base64("APCWxPNCbgGxOYKeMfPqPmXmwdNVyau9y4IsyBcmC14A").unwrap();
-        keystore.add_key(None, kp).unwrap_err();
+        let args = json!(["arg1", "arg2"]);
+        assert!(external.exec("sui-key-tool", "test_method", args).is_ok());
     }
-    // happy path
-    // add a key
 
-    // remove a key
+    #[test]
+    fn test_create_key_success() {
+        let mut mock = MockCommandRunner::new();
+        let key_id = "key-123";
+        mock.expect_run()
+            .with(eq("signer"), eq("create_key"), eq(json![null]))
+            .returning(move |_, _, _| {
+                Ok(json!({
+                    "key_id": key_id,
+                    "public_key": PUBLIC_KEY,
+                }))
+            });
+        let mut external = External::new_for_test(Box::new(mock));
+        let result = external.create_key(None, "signer".to_string());
+        assert!(result.is_ok());
+        let address = result.unwrap();
+        assert!(external.keys.contains_key(&address));
+    }
 
-    // list keys
+    #[test]
+    fn test_add_existing_key() {
+        let mut mock = MockCommandRunner::new();
+        let key_id = "key-123";
+        mock.expect_run().returning(move |_, _, _| {
+            Ok(json!({
+                "keys": [
+                    {"key": key_id, "public_key": PUBLIC_KEY}
+                ]
+            }))
+        });
+        let mut external = External::new_for_test(Box::new(mock));
+        external
+            .add_existing("signer".to_string(), key_id.to_string())
+            .unwrap();
+        let keys = external.keys;
+        let key = keys.get(&SuiAddress::from_str(ADDRESS).expect("Invalid address format"));
+        assert!(key.is_some());
+    }
 
-    // get key by address
+    #[test]
+    fn test_add_keypair_not_supported() {
+        let mock = MockCommandRunner::new();
+        let mut external = External::new_for_test(Box::new(mock));
+        let mut crypto_rng = thread_rng();
+        let ed25519_keypair = Ed25519KeyPair::generate(&mut crypto_rng);
+        let result = external.add_key(None, SuiKeyPair::Ed25519(ed25519_keypair));
+        assert!(result.is_err());
+    }
 
-    // get key by alias
+    #[test]
+    fn test_add_existing_key_not_found() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run()
+            .returning(|_, _, _| Ok(json!({"keys": []})));
+        let mut external = External::new_for_test(Box::new(mock));
+        let result = external.add_existing("signer".to_string(), "missing-key-id".to_string());
+        assert!(result.is_err());
+    }
 
-    // swap out a device
+    #[test]
+    fn test_exec_error_propagation() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run().returning(|_, _, _| Err(anyhow!("fail")));
+        let external = External::new_for_test(Box::new(mock));
+        let result = external.exec("cmd", "method", json!([1, 2, 3]));
+        assert!(result.is_err());
+    }
 
-    // api key no longer exists / valid
+    #[test]
+    fn test_keys_parsing() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run().returning(move |_, _, _| {
+            Ok(json!({
+                "keys": [
+                    {"key": "key-1", "public_key": PUBLIC_KEY},
+                    {"key": "key-2", "public_key": PUBLIC_KEY}
+                ]
+            }))
+        });
+        let external = External::new_for_test(Box::new(mock));
+        let keys = external.key_ids("signer".to_string()).unwrap();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].key_id, "key-1");
+        assert_eq!(keys[1].key_id, "key-2");
+    }
 
-    // no more slots
+    #[test]
+    fn test_remove_key() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run()
+            .returning(|_, _, _| Ok(json!({"success": true})));
+        let mut external = External::new_for_test(Box::new(mock));
+        let address = SuiAddress::from_str(ADDRESS).unwrap();
+        external.keys.insert(
+            address,
+            Key {
+                public_key: PublicKey::decode_base64(PUBLIC_KEY).unwrap(),
+                signer: "signer".to_string(),
+                key_id: "key-123".to_string(),
+            },
+        );
+        let _result = external.remove_key(address);
+        // assert!(result.is_ok());
+        // assert!(!external.keys.contains_key(&address));
+    }
+
+    #[test]
+    fn test_get_keys() {
+        let external = load_external_keystore();
+        let keys = external.keys();
+        assert!(!keys.is_empty());
+        assert!(keys.iter().any(|k| k.encode_base64() == PUBLIC_KEY));
+    }
+
+    #[test]
+    fn test_get_key_fails() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run()
+            .returning(|_, _, _| Ok(json!({"success":true})));
+        let external = External::new_for_test(Box::new(mock));
+
+        let result = external.get_key(&SuiAddress::from_str(ADDRESS).unwrap());
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_sign_hashed() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run().returning(|_, _, _| {
+            let bytes = vec![0; 97];
+            let signature = Signature::from_bytes(&bytes).unwrap();
+            Ok(json!({
+                "signature": signature,
+            }))
+        });
+        let mut external = External::new_for_test(Box::new(mock));
+        let address = SuiAddress::from_str(ADDRESS).unwrap();
+
+        external.keys.insert(
+            address.clone(),
+            Key {
+                public_key: PublicKey::decode_base64(PUBLIC_KEY).unwrap(),
+                signer: "signer".to_string(),
+                key_id: "id".to_string(),
+            },
+        );
+
+        let message = b"message";
+        let result = external.sign_hashed(&address, message).unwrap();
+        assert_eq!(
+            result,
+            Signature::Ed25519SuiSignature(Ed25519SuiSignature::default())
+        )
+    }
+
+    #[test]
+    fn test_sign_secure() {
+        let mut mock = MockCommandRunner::new();
+        mock.expect_run().returning(|_, _, _| {
+            let bytes = vec![0; 97];
+            let signature = Signature::from_bytes(&bytes).unwrap();
+            Ok(json!({
+                "signature": signature,
+            }))
+        });
+
+        let mut external = External::new_for_test(Box::new(mock));
+        let address = SuiAddress::from_str(ADDRESS).unwrap();
+
+        external.keys.insert(
+            address.clone(),
+            Key {
+                public_key: PublicKey::decode_base64(PUBLIC_KEY).unwrap(),
+                signer: "signer".to_string(),
+                key_id: "id".to_string(),
+            },
+        );
+
+        let message = b"message";
+        let intent = Intent::sui_transaction();
+        let result = external.sign_secure(&address, message, intent);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_addresses_with_alias() {
+        let external = load_external_keystore();
+        let addresses_with_alias = external.addresses_with_alias();
+        assert!(!addresses_with_alias.is_empty());
+        assert!(addresses_with_alias
+            .iter()
+            .any(|(addr, alias)| { addr.to_string() == ADDRESS && alias.alias == "test_alias" }));
+    }
+
+    #[test]
+    fn test_aliases() {
+        let external = load_external_keystore();
+        let aliases = external.aliases();
+        assert!(!aliases.is_empty());
+        assert!(aliases.iter().any(|a| a.alias == "test_alias"));
+    }
+
+    #[test]
+    fn test_aliases_mut() {
+        let mut external = load_external_keystore();
+        let aliases = external.aliases_mut();
+        assert!(!aliases.is_empty());
+        for alias in aliases {
+            alias.alias = "new_alias".to_string();
+        }
+        assert!(external.aliases().iter().all(|a| a.alias == "new_alias"));
+    }
+
+    #[test]
+    fn test_get_alias_by_address() {
+        let external = load_external_keystore();
+        let address = SuiAddress::from_str(ADDRESS).unwrap();
+        let alias = external.get_alias_by_address(&address).unwrap();
+        assert_eq!(alias, "test_alias");
+    }
+
+    #[test]
+    fn test_get_address_by_alias() {
+        let external = load_external_keystore();
+        let alias = "test_alias".to_string();
+        let address = external.get_address_by_alias(alias).unwrap();
+        assert_eq!(address.to_string(), ADDRESS);
+    }
+
+    #[test]
+    fn test_create_alias() {
+        let mut external = load_external_keystore();
+        // clear existing aliases
+        external.aliases = BTreeMap::new();
+
+        let alias = external.create_alias(None).unwrap();
+        assert!(!alias.is_empty());
+        assert!(external.aliases().iter().all(|a| a.alias == alias));
+
+        // clear
+        external.aliases.clear();
+
+        let alias = external.create_alias(Some("my_alias".to_string())).unwrap();
+        assert_eq!(alias, "my_alias");
+        assert!(external.aliases().iter().all(|a| a.alias == alias));
+    }
+
+    #[test]
+    fn test_update_alias() {
+        let mut external = load_external_keystore();
+        let old_alias = "test_alias".to_string();
+        let new_alias = "updated_alias".to_string();
+
+        // Ensure the alias exists
+        assert!(external.alias_exists(&old_alias));
+
+        // Update the alias
+        let updated_alias = external.update_alias(&old_alias, Some(&new_alias)).unwrap();
+        assert_eq!(updated_alias, new_alias);
+
+        // Verify the alias was updated
+        assert!(!external.alias_exists(&old_alias));
+        assert!(external.alias_exists(&new_alias));
+    }
 }

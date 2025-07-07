@@ -819,7 +819,7 @@ impl KeyToolCommand {
                     return Err(anyhow!("Keystore is not configured for external signer"));
                 };
 
-                external_keys.keys(signer.clone())?;
+                external_keys.key_ids(signer.clone())?;
 
                 CommandOutput::ExternalConfig("".to_string())
 
