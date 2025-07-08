@@ -205,6 +205,7 @@ members = [
   "crates/typed-store-error",
   "crates/typed-store-workspace-hack",
   "crates/x",
+  "external-crates/move/crates/jsonrpc",
   "sui-execution",
   "sui-execution/cut",
   "sui-execution/latest/sui-adapter",

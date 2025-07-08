@@ -42,6 +42,7 @@ use sui_keys::keypair_file::{
     write_keypair_to_file,
 };
 use sui_keys::keystore::{AccountKeystore, Keystore};
+use sui_sdk::wallet_context::WalletContext;
 use sui_types::base_types::SuiAddress;
 use sui_types::committee::EpochId;
 use sui_types::crypto::{
@@ -82,9 +83,7 @@ pub enum KeyToolCommand {
     /// Hex private key format import and export are both deprecated in
     /// Sui Wallet and Sui CLI Keystore. Use `sui keytool import` if you
     /// wish to import a key to Sui Keystore.
-    Convert {
-        value: String,
-    },
+    Convert { value: String },
     /// Given a Base64 encoded transaction bytes, decode its components. If a signature is provided,
     /// verify the signature against the transaction and output the result.
     DecodeOrVerifyTx {
@@ -152,21 +151,7 @@ pub enum KeyToolCommand {
     /// [enum SuiKeyPair] (Base64 encoded of 33-byte `flag || privkey`) or `type AuthorityKeyPair`
     /// (Base64 encoded `privkey`). This prints out the account keypair as Base64 encoded `flag || privkey`,
     /// the network keypair, worker keypair, protocol keypair as Base64 encoded `privkey`.
-    LoadKeypair {
-        file: PathBuf,
-    },
-
-    ExternalGenerate {
-        signer: String,
-    },
-    ExternalListKeys {
-        signer: String,
-    },
-    /// Add keys to be index
-    ExternalAddExisting {
-        key_id: String,
-        signer: String,
-    },
+    LoadKeypair { file: PathBuf },
 
     /// To MultiSig Sui Address. Pass in a list of all public keys `flag || pk` in Base64.
     /// See `keytool list` for example public keys.
@@ -211,9 +196,7 @@ pub enum KeyToolCommand {
     /// Read the content at the provided file path. The accepted format can be
     /// [enum SuiKeyPair] (Base64 encoded of 33-byte `flag || privkey`) or `type AuthorityKeyPair`
     /// (Base64 encoded `privkey`). It prints its Base64 encoded public key and the key scheme flag.
-    Show {
-        file: PathBuf,
-    },
+    Show { file: PathBuf },
     /// Create signature using the private key for the given address (or its alias) in sui keystore.
     /// Any signature commits to a [struct IntentMessage] consisting of the Base64 encoded
     /// of the BCS serialized transaction bytes itself and its intent. If intent is absent,
@@ -245,9 +228,7 @@ pub enum KeyToolCommand {
     /// This takes [enum SuiKeyPair] of Base64 encoded of 33-byte `flag || privkey`). It
     /// outputs the keypair into a file at the current directory where the address is the filename,
     /// and prints out its Sui address, Base64 encoded public key, the key scheme, and the key scheme flag.
-    Unpack {
-        keypair: String,
-    },
+    Unpack { keypair: String },
 
     /// Given the max_epoch, generate an OAuth url, ask user to paste the redirect with id_token, call salt server, then call the prover server,
     /// create a test transaction, use the ephemeral key to sign and execute it by assembling to a serialized zkLogin signature.
@@ -489,7 +470,6 @@ pub enum CommandOutput {
     Export(ExportedKey),
     List(Vec<Key>),
     LoadKeypair(KeypairData),
-    ExternalConfig(String),
     MultiSigAddress(MultiSigAddress),
     MultiSigCombinePartialSig(MultiSigCombinePartialSig),
     MultiSigCombinePartialSigLegacy(MultiSigCombinePartialSigLegacyOutput),
@@ -505,15 +485,18 @@ pub enum CommandOutput {
 impl KeyToolCommand {
     pub async fn execute(
         self,
-        keystore: &mut Keystore,
-        external_keys: Option<&mut Keystore>,
+        context: &mut WalletContext,
     ) -> Result<CommandOutput, anyhow::Error> {
         let cmd_result = Ok(match self {
             KeyToolCommand::Alias {
                 old_alias,
                 new_alias,
             } => {
-                let new_alias = keystore.update_alias(&old_alias, new_alias.as_deref())?;
+                let keystore: &mut Keystore =
+                    context.get_keystore_by_identity_mut(&KeyIdentity::Alias(old_alias.clone()))?;
+                let new_alias = keystore
+                    .update_alias(&old_alias, new_alias.as_deref())
+                    .await?;
                 CommandOutput::Alias(AliasUpdate {
                     old_alias,
                     new_alias,
@@ -663,11 +646,11 @@ impl KeyToolCommand {
                     Ok(skp) => {
                         info!("Importing Bech32 encoded private key to keystore");
                         let mut key = Key::from(&skp);
-                        keystore.import(alias.clone(), skp)?;
+                        context.config.keystore.import(alias.clone(), skp).await?;
 
                         let alias = match alias {
                             Some(x) => x,
-                            None => keystore.get_alias(&key.sui_address)?,
+                            None => context.config.keystore.get_alias(&key.sui_address)?,
                         };
 
                         key.alias = Some(alias);
@@ -675,18 +658,22 @@ impl KeyToolCommand {
                     }
                     Err(_) => {
                         info!("Importing mneomonics to keystore");
-                        let sui_address = keystore.import_from_mnemonic(
-                            &input_string,
-                            key_scheme,
-                            derivation_path,
-                            alias.clone(),
-                        )?;
-                        let skp = keystore.export(&sui_address)?;
+                        let sui_address = context
+                            .config
+                            .keystore
+                            .import_from_mnemonic(
+                                &input_string,
+                                key_scheme,
+                                derivation_path,
+                                alias.clone(),
+                            )
+                            .await?;
+                        let skp = context.config.keystore.export(&sui_address)?;
                         let mut key = Key::from(skp);
 
                         let alias = match alias {
                             Some(x) => x,
-                            None => keystore.get_alias(&key.sui_address)?,
+                            None => context.config.keystore.get_alias(&key.sui_address)?,
                         };
 
                         key.alias = Some(alias);
@@ -695,10 +682,10 @@ impl KeyToolCommand {
                 }
             }
             KeyToolCommand::Export { key_identity } => {
-                let address = keystore.get_by_identity(key_identity)?;
-                let skp = keystore.export(&address)?;
+                let address = context.config.keystore.get_by_identity(&key_identity)?;
+                let skp = context.config.keystore.export(&address)?;
                 let mut key = Key::from(skp);
-                key.alias = keystore.get_alias(&key.sui_address).ok();
+                key.alias = context.config.keystore.get_alias(&key.sui_address).ok();
                 let key = ExportedKey {
                     exported_private_key: skp
                         .encode()
@@ -708,15 +695,27 @@ impl KeyToolCommand {
                 CommandOutput::Export(key)
             }
             KeyToolCommand::List { sort_by_alias } => {
-                let mut keys = keystore
+                let external_keys = context
+                    .config
+                    .external_keys
+                    .as_ref()
+                    .map(|k| k.entries())
+                    .unwrap_or_else(|| vec![])
+                    .into_iter();
+
+                let mut keys: Vec<Key> = context
+                    .config
+                    .keystore
                     .entries()
                     .into_iter()
+                    .chain(external_keys)
                     .map(|pk| {
                         let mut key = Key::from(pk);
-                        key.alias = keystore.get_alias(&key.sui_address).ok();
+                        key.alias = context.config.keystore.get_alias(&key.sui_address).ok();
                         key
                     })
-                    .collect::<Vec<Key>>();
+                    .collect();
+
                 if sort_by_alias {
                     keys.sort_unstable();
                 }
@@ -759,110 +758,6 @@ impl KeyToolCommand {
                     }
                 };
                 CommandOutput::LoadKeypair(output)
-            }
-
-            // KeyToolCommand::ExternalConfig {
-            //     set_signer,
-            //     remove_signer: _remove_signer,
-            // } => {
-            //     let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
-            //     let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
-            //
-            //     if let Some(signer) = set_signer {
-            //         let signer = External::new(signer);
-            //         config.keystore = Keystore::External(signer);
-            //         config.persisted(&client_path).save()?;
-            //         CommandOutput::ExternalConfig("External signer set successfully".to_string())
-            //     } else {
-            //         CommandOutput::ExternalConfig(match config.keystore {
-            //             Keystore::External(external) => format!("signer: {}", external.signer),
-            //             _ => "Not using an external signer".to_string(),
-            //         })
-            //     }
-            // }
-            KeyToolCommand::ExternalGenerate { signer } => {
-                // TODO extract external keys as a helper function
-                let Some(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-                let Keystore::External(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-
-                external_keys.create_key(None, signer.clone())?;
-                external_keys.save()?;
-
-                CommandOutput::ExternalConfig("".to_string())
-
-                // Keystore::External(external) => {
-                //     let key = external.create_key(None)?;
-                //
-                //     let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
-                //     let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
-                //
-                //     config.keystore = Keystore::External(External::from_existing(external));
-                //     config.persisted(&client_path).save()?;
-                //
-                //     CommandOutput::ExternalConfig(format!("Created key: {}", key,))
-                // }
-                // _ => {
-                //     CommandOutput::ExternalConfig("Not configured for external signer".to_string())
-                // }
-            }
-
-            KeyToolCommand::ExternalListKeys { signer } => {
-                // TODO extract external keys as a helper function
-                let Some(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-                let Keystore::External(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-
-                external_keys.key_ids(signer.clone())?;
-
-                CommandOutput::ExternalConfig("".to_string())
-
-                // match keystore {
-                // Keystore::External(external) => {
-                //     let keys = external.keys(signer);
-                //     let mut output = "".to_string();
-                //     for key in keys {
-                //         output.push_str(&format!("{}\n", key));
-                //     }
-                //
-                //     CommandOutput::ExternalConfig(output)
-                // }
-                // _ => {
-                //     CommandOutput::ExternalConfig("Not configured for external signer".to_string())
-                // }
-            }
-
-            KeyToolCommand::ExternalAddExisting { key_id, signer } => {
-                // TODO extract external keys as a helper function
-                let Some(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-                let Keystore::External(external_keys) = external_keys else {
-                    return Err(anyhow!("Keystore is not configured for external signer"));
-                };
-                external_keys.add_existing(key_id, signer.clone())?;
-
-                CommandOutput::ExternalConfig("".to_string())
-                // match keystore {
-                //     Keystore::External(external) => {
-                //         let keys = external.add_existing_keys()?;
-                //         // let mut output = "".to_string();
-                //         // for key in keys {
-                //         //     output.push_str(&format!("{}\n", key));
-                //         // }
-                //         //
-                //         // CommandOutput::ExternalConfig(output)
-                //     }
-                //     _ => {
-                //         CommandOutput::ExternalConfig("Not configured for external signer".to_string())
-                //     }
-                // }
             }
 
             KeyToolCommand::MultiSigAddress {
@@ -961,7 +856,7 @@ impl KeyToolCommand {
                 data,
                 intent,
             } => {
-                let address = keystore.get_by_identity(address)?;
+                let address = context.get_identity_address(Some(address))?;
                 let intent = intent.unwrap_or_else(Intent::sui_transaction);
                 let intent_clone = intent.clone();
                 let msg: TransactionData =
@@ -973,8 +868,9 @@ impl KeyToolCommand {
                 let mut hasher = DefaultHash::default();
                 hasher.update(bcs::to_bytes(&intent_msg)?);
                 let digest = hasher.finalize().digest;
-                let sui_signature =
-                    keystore.sign_secure(&address, &intent_msg.value, intent_msg.intent)?;
+                let sui_signature = context
+                    .sign_secure(&address.into(), &intent_msg.value, intent_msg.intent)
+                    .await?;
                 CommandOutput::Sign(SignData {
                     sui_address: address,
                     raw_tx_data: data,
@@ -1144,7 +1040,7 @@ impl KeyToolCommand {
                 let pk = skp.public();
                 let ephemeral_key_identifier: SuiAddress = (&skp.public()).into();
                 println!("Ephemeral key identifier: {ephemeral_key_identifier}");
-                keystore.import(None, skp)?;
+                context.config.keystore.import(None, skp).await?;
 
                 let mut eph_pk_bytes = vec![pk.flag()];
                 eph_pk_bytes.extend(pk.as_ref());
@@ -1307,7 +1203,7 @@ impl KeyToolCommand {
                     &jwt_randomness,
                     &kp_bigint.to_string(),
                     ephemeral_key_identifier,
-                    keystore,
+                    &mut context.config.keystore,
                     &network,
                     test_multisig,
                     sign_with_sk,
@@ -1331,7 +1227,7 @@ impl KeyToolCommand {
                     &jwt_randomness,
                     &kp_bigint,
                     ephemeral_key_identifier,
-                    keystore,
+                    &mut context.config.keystore,
                     &network,
                     test_multisig,
                     sign_with_sk,
