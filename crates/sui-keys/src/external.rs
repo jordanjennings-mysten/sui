@@ -175,6 +175,10 @@ impl External {
         Ok(keys)
     }
 
+    pub fn is_indexed(&self, key: &Key) -> bool {
+        self.keys.contains_key(&SuiAddress::from(&key.public_key))
+    }
+
     pub fn save_aliases(&self) -> Result<(), Error> {
         if let Some(path) = &self.path {
             let aliases_store: String = serde_json::to_string_pretty(&self.aliases)

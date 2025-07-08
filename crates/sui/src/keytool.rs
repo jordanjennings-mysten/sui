@@ -376,6 +376,7 @@ pub struct ExportedKey {
 #[serde(rename_all = "camelCase")]
 pub struct ExternalKey {
     key_id: String,
+    is_indexed: bool,
     key: Key,
 }
 
@@ -794,6 +795,7 @@ impl KeyToolCommand {
                 let keys: Vec<ExternalKey> = keys
                     .into_iter()
                     .map(|key| ExternalKey {
+                        is_indexed: external_keys.is_indexed(&key),
                         key_id: key.key_id,
                         key: Key::from(key.public_key),
                     })
@@ -808,6 +810,7 @@ impl KeyToolCommand {
                 let key = external_keys.add_existing(signer.clone(), key_id)?;
 
                 CommandOutput::ExternalAddExisting(ExternalKey {
+                    is_indexed: true,
                     key_id: key.key_id,
                     key: Key::from(key.public_key),
                 })
