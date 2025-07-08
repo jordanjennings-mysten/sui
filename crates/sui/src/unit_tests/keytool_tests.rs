@@ -19,8 +19,9 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use shared_crypto::intent::Intent;
 use shared_crypto::intent::IntentScope;
+use sui_keys::external::MockCommandRunner;
 use sui_keys::key_identity::KeyIdentity;
-use sui_keys::keystore::{AccountKeystore, FileBasedKeystore, InMemKeystore, Keystore};
+use sui_keys::keystore::{AccountKeystore, External, FileBasedKeystore, InMemKeystore, Keystore};
 use sui_types::base_types::ObjectDigest;
 use sui_types::base_types::ObjectID;
 use sui_types::base_types::SequenceNumber;
@@ -57,7 +58,7 @@ async fn test_addresses_command() -> Result<(), anyhow::Error> {
     KeyToolCommand::List {
         sort_by_alias: true,
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .unwrap();
     Ok(())
@@ -238,7 +239,7 @@ async fn test_private_keys_import_export() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::ED25519,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await?;
         let kp = SuiKeyPair::decode(private_key).unwrap();
         let kp_from_hex = SuiKeyPair::Ed25519(
@@ -257,7 +258,7 @@ async fn test_private_keys_import_export() -> Result<(), anyhow::Error> {
         let output = KeyToolCommand::Export {
             key_identity: KeyIdentity::Address(addr),
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await?;
         match output {
             CommandOutput::Export(exported) => {
@@ -276,7 +277,7 @@ async fn test_private_keys_import_export() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::ED25519,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await;
         assert!(output.is_err());
 
@@ -287,7 +288,7 @@ async fn test_private_keys_import_export() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::ED25519,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await;
         assert!(output.is_err());
     }
@@ -310,7 +311,7 @@ async fn test_mnemonics_ed25519() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::ED25519,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await?;
         let kp = SuiKeyPair::decode(t[1]).unwrap();
         let addr = SuiAddress::from_str(t[2]).unwrap();
@@ -335,7 +336,7 @@ async fn test_mnemonics_secp256k1() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::Secp256k1,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await?;
         let kp = SuiKeyPair::decode(t[1]).unwrap();
         let addr = SuiAddress::from_str(t[2]).unwrap();
@@ -374,7 +375,7 @@ async fn test_mnemonics_secp256r1() -> Result<(), anyhow::Error> {
             key_scheme: SignatureScheme::Secp256r1,
             derivation_path: None,
         }
-        .execute(&mut keystore)
+        .execute(&mut keystore, Some(&mut get_external_keystore()))
         .await?;
 
         let kp = SuiKeyPair::decode(sk).unwrap();
@@ -395,7 +396,7 @@ async fn test_invalid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/44'/1'/0'/0/0".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_err());
 
@@ -405,7 +406,7 @@ async fn test_invalid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/0'/784'/0'/0/0".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_err());
 
@@ -415,7 +416,7 @@ async fn test_invalid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/54'/784'/0'/0/0".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_err());
 
@@ -425,7 +426,7 @@ async fn test_invalid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::Secp256k1,
         derivation_path: Some("m/54'/784'/0'/0'/0'".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_err());
 
@@ -435,7 +436,7 @@ async fn test_invalid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::Secp256k1,
         derivation_path: Some("m/44'/784'/0'/0/0".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_err());
 
@@ -451,7 +452,7 @@ async fn test_valid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/44'/784'/0'/0'/0'".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_ok());
 
@@ -461,7 +462,7 @@ async fn test_valid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/44'/784'/0'/0'/1'".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_ok());
 
@@ -471,7 +472,7 @@ async fn test_valid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::ED25519,
         derivation_path: Some("m/44'/784'/1'/0'/1'".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_ok());
 
@@ -481,7 +482,7 @@ async fn test_valid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::Secp256k1,
         derivation_path: Some("m/54'/784'/0'/0/1".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_ok());
 
@@ -491,7 +492,7 @@ async fn test_valid_derivation_path() -> Result<(), anyhow::Error> {
         key_scheme: SignatureScheme::Secp256k1,
         derivation_path: Some("m/54'/784'/1'/0/1".parse().unwrap()),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await
     .is_ok());
     Ok(())
@@ -505,7 +506,7 @@ async fn test_keytool_bls12381() -> Result<(), anyhow::Error> {
         derivation_path: None,
         word_length: None,
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await?;
     Ok(())
 }
@@ -542,7 +543,7 @@ async fn test_sign_command() -> Result<(), anyhow::Error> {
         data: Base64::encode(bcs::to_bytes(&tx_data)?),
         intent: Some(Intent::sui_app(IntentScope::PersonalMessage)),
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await?;
 
     // Sign an intent message for the transaction data without intent passed in, so default is used.
@@ -551,7 +552,7 @@ async fn test_sign_command() -> Result<(), anyhow::Error> {
         data: Base64::encode(bcs::to_bytes(&tx_data)?),
         intent: None,
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await?;
 
     // Sign an intent message for the transaction data without intent passed in, so default is used.
@@ -561,7 +562,11 @@ async fn test_sign_command() -> Result<(), anyhow::Error> {
         data: Base64::encode(bcs::to_bytes(&tx_data)?),
         intent: None,
     }
-    .execute(&mut keystore)
+    .execute(&mut keystore, Some(&mut get_external_keystore()))
     .await?;
     Ok(())
+}
+
+fn get_external_keystore() -> Keystore {
+    Keystore::from(External::new_for_test(Box::new(MockCommandRunner::new())))
 }

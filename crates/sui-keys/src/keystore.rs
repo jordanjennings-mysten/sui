@@ -1,10 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::external::External;
+pub use crate::external::External;
 use crate::key_derive::{derive_key_pair_from_path, generate_new_key};
 use crate::key_identity::KeyIdentity;
 use crate::random_names::{random_name, random_names};
+
 use anyhow::{anyhow, bail, ensure, Context, Error};
 use bip32::DerivationPath;
 use bip39::{Language, Mnemonic, Seed};
@@ -524,15 +525,11 @@ impl AccountKeystore for InMemKeystore {
         Ok(())
     }
 
-<<<<<<< HEAD
-    fn remove(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {
-=======
     fn create_key(&mut self, _alias: Option<String>, _signer: String) -> Result<SuiAddress, Error> {
         Err(anyhow!("Not supported for in-memory keystore"))
     }
 
-    fn remove_key(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {
->>>>>>> 0f79b00bba (wip serialize to separate file, rework commands to use new external_keys)
+    fn remove(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {
         self.aliases.remove(&address);
         self.keys.remove(&address);
         Ok(())

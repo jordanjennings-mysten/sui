@@ -49,8 +49,7 @@ impl CommandRunner for StdCommandRunner {
             .arg("call")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .spawn()?;
 
         // spawn tokio process
         let mut endpoint = Endpoint::new(
@@ -84,7 +83,7 @@ impl CommandRunner for StdCommandRunner {
 
 impl External {
     /// Load keys and aliases from a given path
-    pub fn new(path: &PathBuf) -> Result<Self, anyhow::Error> {
+    pub fn new(path: &PathBuf) -> Result<Self, Error> {
         let mut aliases_store_path = path.clone();
         aliases_store_path.set_extension("aliases");
         let aliases: BTreeMap<SuiAddress, Alias> = if aliases_store_path.exists() {
@@ -138,27 +137,20 @@ impl External {
     }
 
     /// Add a Key ID from the given signer to the Sui CLI index
-    pub fn add_existing(&mut self, signer: String, key_id: String) -> Result<(), Error> {
-        let keys = self.key_ids(signer.clone()).unwrap();
+    pub fn add_existing(&mut self, signer: String, key_id: String) -> Result<Key, Error> {
+        let keys = self.signer_available_keys(signer.clone()).unwrap();
 
         let key: Key = keys
             .into_iter()
             .find(|k| k.key_id == key_id)
             .ok_or_else(|| anyhow!("Key with id {} not found for signer {}", key_id, signer))?;
 
-        self.keys.insert(
-            (&key.public_key).into(),
-            Key {
-                public_key: key.public_key,
-                signer,
-                key_id,
-            },
-        );
-        Ok(())
+        self.keys.insert((&key.public_key).into(), key.clone());
+        Ok(key)
     }
 
     /// Return all Key IDs associated with a signer, indexed or not
-    pub fn key_ids(&self, signer: String) -> Result<Vec<Key>, Error> {
+    pub fn signer_available_keys(&self, signer: String) -> Result<Vec<Key>, Error> {
         let result = self.exec(&signer, "keys", json![null]).unwrap();
 
         // array of strings
@@ -169,7 +161,7 @@ impl External {
 
         let mut keys = Vec::new();
         for key_json in keys_json {
-            let key_id = key_json["key"]
+            let key_id = key_json["key_id"]
                 .as_str()
                 .ok_or_else(|| anyhow!("Failed to parse key id"))
                 .unwrap();
@@ -249,7 +241,8 @@ impl AccountKeystore for External {
         Err(anyhow!("Not supported for external keys."))
     }
 
-    fn create_key(&mut self, _alias: Option<String>, signer: String) -> Result<SuiAddress, Error> {
+    // TODO create with alias
+    fn create_key(&mut self, _alias: Option<String>, signer: String) -> Result<PublicKey, Error> {
         let res = self.exec(&signer, "create_key", json![null])?;
 
         // key_id is the unique identifier for the key for the given signer
@@ -266,12 +259,12 @@ impl AccountKeystore for External {
         self.keys.insert(
             address,
             Key {
-                public_key,
+                public_key: public_key.clone(),
                 signer: signer.clone(),
                 key_id: key_id.to_string(),
             },
         );
-        Ok(address)
+        Ok(public_key)
     }
 
     fn remove_key(&mut self, _address: SuiAddress) -> Result<(), Error> {
@@ -595,7 +588,7 @@ mod tests {
         let mut external = External::new_for_test(Box::new(mock));
         let result = external.create_key(None, "signer".to_string());
         assert!(result.is_ok());
-        let address = result.unwrap();
+        let address = (&result.unwrap()).into();
         assert!(external.keys.contains_key(&address));
     }
 
@@ -660,7 +653,9 @@ mod tests {
             }))
         });
         let external = External::new_for_test(Box::new(mock));
-        let keys = external.key_ids("signer".to_string()).unwrap();
+        let keys = external
+            .signer_available_keys("signer".to_string())
+            .unwrap();
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0].key_id, "key-1");
         assert_eq!(keys[1].key_id, "key-2");
