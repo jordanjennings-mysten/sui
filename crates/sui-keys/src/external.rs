@@ -6,7 +6,7 @@ use base64;
 use base64::{engine::general_purpose, Engine as _};
 use bcs;
 use fastcrypto::traits::EncodeDecodeBase64;
-use jsonrpc::client_sync::Endpoint;
+use jsonrpc::client::Endpoint;
 use mockall::{automock, predicate::*};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as JsonValue};
@@ -14,9 +14,10 @@ use shared_crypto::intent::Intent;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use sui_types::base_types::SuiAddress;
 use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
+use tokio::process::Command;
 
 #[derive(Debug)]
 pub struct External {
@@ -44,6 +45,8 @@ pub trait CommandRunner: Send + Sync + Debug {
 struct StdCommandRunner;
 impl CommandRunner for StdCommandRunner {
     fn run(&self, command: &str, method: &str, args: JsonValue) -> Result<JsonValue, Error> {
+        // get tokio command
+
         // spawn tokio
         let mut cmd = Command::new(command)
             .arg("call")
@@ -57,21 +60,28 @@ impl CommandRunner for StdCommandRunner {
             cmd.stdin.take().expect("No stdin"),
         );
 
-        let res: JsonValue = endpoint.call(method, args)?;
-        if res.is_null() {
-            return Err(anyhow!("Command returned null result"));
-        }
+        let res = tokio::task::block_in_place(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                let res: JsonValue = endpoint.call(method, args).await?;
+                if res.is_null() {
+                    return Err(anyhow!("Command returned null result"));
+                }
 
-        let output = cmd
-            .wait_with_output()
-            .map_err(|e| anyhow!("Failed to wait for command to finish: {}", e))?;
+                let output = cmd
+                    .wait_with_output()
+                    .await
+                    .map_err(|e| anyhow!("Failed to wait for command to finish: {}", e))?;
 
-        if !output.status.success() {
-            return Err(Error::msg(format!(
-                "Command failed with status: {}",
-                output.status
-            )));
-        }
+                if !output.status.success() {
+                    return Err(Error::msg(format!(
+                        "Command failed with status: {}",
+                        output.status
+                    )));
+                }
+
+                Ok(res)
+            })
+        })?;
 
         if !res["error"].is_null() {
             return Err(anyhow!("Command failed with error: {:?}", res["error"]));
