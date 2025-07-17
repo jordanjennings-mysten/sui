@@ -21,7 +21,6 @@ use serde_json::json;
 use shared_crypto::intent::Intent;
 use sui_sdk::types::{
     base_types::{ObjectID, SuiAddress},
-    crypto::SignatureScheme::ED25519,
     digests::TransactionDigest,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     quorum_driver_types::ExecuteTransactionRequestType,
@@ -270,8 +269,6 @@ pub async fn split_coin_digest(
 pub fn retrieve_wallet() -> Result<WalletContext, anyhow::Error> {
     let wallet_conf = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
     let keystore_path = sui_config_dir()?.join(SUI_KEYSTORE_FILENAME);
-    // TODO
-    let external_keystore_path = sui_config_dir()?.join(SUI_KEYSTORE_FILENAME);
 
     // check if a wallet exists and if not, create a wallet and a sui client config
     if !keystore_path.exists() {
@@ -301,11 +298,11 @@ pub fn retrieve_wallet() -> Result<WalletContext, anyhow::Error> {
     let default_active_address = if let Some(address) = keystore.addresses().first() {
         *address
     } else {
-        keystore.generate(ED25519, None, None, None)?.0
+        keystore.generate(None, Default::default())?.0
     };
 
     if keystore.addresses().len() < 2 {
-        keystore.generate(ED25519, None, None, None)?;
+        keystore.generate(None, Default::default())?;
     }
 
     client_config.active_address = Some(default_active_address);

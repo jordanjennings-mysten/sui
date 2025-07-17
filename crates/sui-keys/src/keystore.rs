@@ -6,7 +6,7 @@ use crate::key_derive::{derive_key_pair_from_path, generate_new_key};
 use crate::key_identity::KeyIdentity;
 use crate::random_names::{random_name, random_names};
 
-use anyhow::{anyhow, bail, ensure, Context, Error};
+use anyhow::{anyhow, bail, ensure, Context};
 use bip32::DerivationPath;
 use bip39::{Language, Mnemonic, Seed};
 use rand::{rngs::StdRng, SeedableRng};
@@ -34,21 +34,52 @@ pub enum Keystore {
     External(External),
 }
 
+pub struct LocalGenerate {
+    key_scheme: SignatureScheme,
+    derivation_path: Option<DerivationPath>,
+    word_length: Option<String>,
+}
+
+pub enum GenerateOptions {
+    /// Default options for key generation of any keystore type.
+    Default,
+    /// File or InMem keystore
+    Local(LocalGenerate),
+    /// Signer
+    ExternalSigner(String),
+}
+
+impl Default for GenerateOptions {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 #[enum_dispatch]
 pub trait AccountKeystore: Send + Sync {
     /// Generate a new keypair and add it into the keystore.
     fn generate(
         &mut self,
-        key_scheme: SignatureScheme,
         alias: Option<String>,
-        derivation_path: Option<DerivationPath>,
-        word_length: Option<String>,
-        signer:
-    ) -> Result<(SuiAddress, String, SignatureScheme), anyhow::Error> {
-        let (address, kp, scheme, phrase) =
+        generate_options: GenerateOptions,
+    ) -> Result<(SuiAddress, PublicKey, SignatureScheme), anyhow::Error> {
+        let (key_scheme, derivation_path, word_length) = match generate_options {
+            GenerateOptions::Default => (SignatureScheme::ED25519, None, None),
+            GenerateOptions::Local(opts) => {
+                (opts.key_scheme, opts.derivation_path, opts.word_length)
+            }
+            GenerateOptions::ExternalSigner(_) => {
+                return Err(anyhow!(
+                    "Generating new keypair is not supported for this keystore type"
+                ));
+            }
+        };
+
+        let (address, kp, scheme, _phrase) =
             generate_new_key(key_scheme, derivation_path, word_length)?;
+        let public_key = kp.public();
         self.import(alias, kp)?;
-        Ok((address, phrase, scheme))
+        Ok((address, public_key, scheme))
     }
 
     /// Import a keypair into the keystore.
@@ -287,7 +318,6 @@ impl AccountKeystore for FileBasedKeystore {
     fn create_alias(&self, alias: Option<String>) -> Result<String, anyhow::Error> {
         match alias {
             Some(a) if self.alias_exists(&a) => {
-                //} aliases.values().any(|x| x.alias == a) => {
                 bail!("Alias {a} already exists. Please choose another alias.")
             }
             Some(a) => validate_alias(&a),
@@ -523,10 +553,6 @@ impl AccountKeystore for InMemKeystore {
         self.aliases.insert(address, alias);
         self.keys.insert(address, keypair);
         Ok(())
-    }
-
-    fn create_key(&mut self, _alias: Option<String>, _signer: String) -> Result<SuiAddress, Error> {
-        Err(anyhow!("Not supported for in-memory keystore"))
     }
 
     fn remove(&mut self, address: SuiAddress) -> Result<(), anyhow::Error> {

@@ -1,4 +1,4 @@
-use crate::keystore::{AccountKeystore, Alias};
+use crate::keystore::{validate_alias, AccountKeystore, Alias, GenerateOptions};
 use crate::random_names::random_name;
 use anyhow::Error;
 use anyhow::{anyhow, bail};
@@ -16,7 +16,8 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::process::Stdio;
 use sui_types::base_types::SuiAddress;
-use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
+use sui_types::crypto::SignatureScheme::ED25519;
+use sui_types::crypto::{PublicKey, Signature, SignatureScheme, SuiKeyPair};
 use tokio::process::Command;
 
 #[derive(Debug)]
@@ -251,12 +252,16 @@ impl<'de> Deserialize<'de> for External {
 }
 
 impl AccountKeystore for External {
-    fn add_key(&mut self, _alias: Option<String>, _keypair: SuiKeyPair) -> Result<(), Error> {
-        Err(anyhow!("Not supported for external keys."))
-    }
-
     // TODO create with alias
-    fn create_key(&mut self, _alias: Option<String>, signer: String) -> Result<PublicKey, Error> {
+    fn generate(
+        &mut self,
+        _alias: Option<String>,
+        opts: GenerateOptions,
+    ) -> Result<(SuiAddress, PublicKey, SignatureScheme), Error> {
+        let GenerateOptions::ExternalSigner(signer) = opts else {
+            return Err(anyhow!("Signer must be provided for external keys."));
+        };
+
         let res = self.exec(&signer, "create_key", json![null])?;
 
         // key_id is the unique identifier for the key for the given signer
@@ -278,14 +283,19 @@ impl AccountKeystore for External {
                 key_id: key_id.to_string(),
             },
         );
-        Ok(public_key)
+
+        Ok((address, public_key, ED25519))
     }
 
-    fn remove_key(&mut self, _address: SuiAddress) -> Result<(), Error> {
+    fn import(&mut self, _alias: Option<String>, _keypair: SuiKeyPair) -> Result<(), Error> {
+        Err(anyhow!("Import not supported for external keys."))
+    }
+
+    fn remove(&mut self, _address: SuiAddress) -> Result<(), Error> {
         Err(anyhow!("Not supported for external keys."))
     }
 
-    fn keys(&self) -> Vec<PublicKey> {
+    fn entries(&self) -> Vec<PublicKey> {
         let mut keys = Vec::new();
         for (_, Key { public_key, .. }) in &self.keys {
             keys.push(public_key.clone());
@@ -293,8 +303,15 @@ impl AccountKeystore for External {
         keys
     }
 
-    fn get_key(&self, _address: &SuiAddress) -> Result<&SuiKeyPair, Error> {
-        Err(anyhow!("Not supported for external keys."))
+    fn get_alias(&self, address: &SuiAddress) -> Result<String, anyhow::Error> {
+        match self.aliases.get(address) {
+            Some(alias) => Ok(alias.alias.clone()),
+            None => bail!("Cannot find alias for address {address}"),
+        }
+    }
+
+    fn export(&self, _address: &SuiAddress) -> Result<&SuiKeyPair, Error> {
+        Err(anyhow!("Export not supported for external keys."))
     }
 
     fn sign_hashed(&self, address: &SuiAddress, msg: &[u8]) -> Result<Signature, signature::Error> {
@@ -391,32 +408,17 @@ impl AccountKeystore for External {
         aliases
     }
 
-    fn get_alias_by_address(&self, address: &SuiAddress) -> Result<String, Error> {
-        match self.aliases.get(address) {
-            Some(alias) => Ok(alias.alias.clone()),
-            None => bail!("Cannot find alias for address {address}"),
-        }
-    }
-
-    fn get_address_by_alias(&self, alias: String) -> Result<&SuiAddress, Error> {
-        self.addresses_with_alias()
-            .iter()
-            .find(|x| x.1.alias == alias)
-            .ok_or_else(|| anyhow!("Cannot resolve alias {alias} to an address"))
-            .map(|x| x.0)
-    }
-
     fn create_alias(&self, alias: Option<String>) -> Result<String, Error> {
         match alias {
             Some(a) if self.alias_exists(&a) => {
                 bail!("Alias {a} already exists. Please choose another alias.")
             }
-            Some(a) => crate::keystore::validate_alias(&a),
+            Some(a) => validate_alias(&a),
             None => Ok(random_name(
                 &self
-                    .alias_names()
+                    .aliases()
                     .into_iter()
-                    .map(|x| x.to_string())
+                    .map(|x| x.alias.to_string())
                     .collect::<HashSet<_>>(),
             )),
         }
@@ -443,7 +445,8 @@ impl AccountKeystore for External {
 #[cfg(test)]
 mod tests {
     use super::{External, Key, MockCommandRunner, StdCommandRunner};
-    use crate::keystore::AccountKeystore;
+    use crate::key_identity::KeyIdentity;
+    use crate::keystore::{AccountKeystore, GenerateOptions};
     use anyhow::anyhow;
     use fastcrypto::ed25519::Ed25519KeyPair;
     use fastcrypto::traits::{EncodeDecodeBase64, KeyPair, ToFromBytes};
@@ -600,9 +603,9 @@ mod tests {
                 }))
             });
         let mut external = External::new_for_test(Box::new(mock));
-        let result = external.create_key(None, "signer".to_string());
+        let result = external.generate(None, GenerateOptions::ExternalSigner("signer".to_string()));
         assert!(result.is_ok());
-        let address = (&result.unwrap()).into();
+        let address = result.unwrap().0;
         assert!(external.keys.contains_key(&address));
     }
 
@@ -613,7 +616,7 @@ mod tests {
         mock.expect_run().returning(move |_, _, _| {
             Ok(json!({
                 "keys": [
-                    {"key": key_id, "public_key": PUBLIC_KEY}
+                    {"key_id": key_id, "public_key": PUBLIC_KEY}
                 ]
             }))
         });
@@ -632,7 +635,7 @@ mod tests {
         let mut external = External::new_for_test(Box::new(mock));
         let mut crypto_rng = thread_rng();
         let ed25519_keypair = Ed25519KeyPair::generate(&mut crypto_rng);
-        let result = external.add_key(None, SuiKeyPair::Ed25519(ed25519_keypair));
+        let result = external.import(None, SuiKeyPair::Ed25519(ed25519_keypair));
         assert!(result.is_err());
     }
 
@@ -661,8 +664,8 @@ mod tests {
         mock.expect_run().returning(move |_, _, _| {
             Ok(json!({
                 "keys": [
-                    {"key": "key-1", "public_key": PUBLIC_KEY},
-                    {"key": "key-2", "public_key": PUBLIC_KEY}
+                    {"key_id": "key-1", "public_key": PUBLIC_KEY},
+                    {"key_id": "key-2", "public_key": PUBLIC_KEY}
                 ]
             }))
         });
@@ -690,7 +693,7 @@ mod tests {
                 key_id: "key-123".to_string(),
             },
         );
-        let _result = external.remove_key(address);
+        let _result = external.remove(address);
         // assert!(result.is_ok());
         // assert!(!external.keys.contains_key(&address));
     }
@@ -698,7 +701,7 @@ mod tests {
     #[test]
     fn test_get_keys() {
         let external = load_external_keystore();
-        let keys = external.keys();
+        let keys = external.entries();
         assert!(!keys.is_empty());
         assert!(keys.iter().any(|k| k.encode_base64() == PUBLIC_KEY));
     }
@@ -710,7 +713,7 @@ mod tests {
             .returning(|_, _, _| Ok(json!({"success":true})));
         let external = External::new_for_test(Box::new(mock));
 
-        let result = external.get_key(&SuiAddress::from_str(ADDRESS).unwrap());
+        let result = external.export(&SuiAddress::from_str(ADDRESS).unwrap());
         assert!(result.is_err())
     }
 
@@ -804,18 +807,11 @@ mod tests {
     }
 
     #[test]
-    fn test_get_alias_by_address() {
+    fn test_get_by_identity() {
         let external = load_external_keystore();
         let address = SuiAddress::from_str(ADDRESS).unwrap();
-        let alias = external.get_alias_by_address(&address).unwrap();
-        assert_eq!(alias, "test_alias");
-    }
-
-    #[test]
-    fn test_get_address_by_alias() {
-        let external = load_external_keystore();
-        let alias = "test_alias".to_string();
-        let address = external.get_address_by_alias(alias).unwrap();
+        let identity = KeyIdentity::Address(address.clone());
+        let address = external.get_by_identity(identity).unwrap();
         assert_eq!(address.to_string(), ADDRESS);
     }
 

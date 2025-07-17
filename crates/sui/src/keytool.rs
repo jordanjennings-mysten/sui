@@ -42,7 +42,7 @@ use sui_keys::keypair_file::{
     read_authority_keypair_from_file, read_keypair_from_file, write_authority_keypair_to_file,
     write_keypair_to_file,
 };
-use sui_keys::keystore::{AccountKeystore, Keystore};
+use sui_keys::keystore::{AccountKeystore, GenerateOptions, Keystore};
 use sui_types::base_types::SuiAddress;
 use sui_types::committee::EpochId;
 use sui_types::crypto::{
@@ -780,8 +780,9 @@ impl KeyToolCommand {
                     return Err(anyhow!("Keystore is not configured for external signer"));
                 };
 
-                let pk = external_keys.create_key(None, signer.clone())?;
-                let key = Key::from(pk);
+                let (_address, pub_key, _scheme) =
+                    external_keys.generate(None, GenerateOptions::ExternalSigner(signer))?;
+                let key = Key::from(pub_key);
                 external_keys.save()?;
 
                 CommandOutput::ExternalGenerate(key)
