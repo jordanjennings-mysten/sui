@@ -1333,7 +1333,7 @@ impl TestClusterBuilder {
         let keystore_path = dir.join(SUI_KEYSTORE_FILENAME);
 
         swarm.config().save(network_path)?;
-        let mut keystore = Keystore::from(FileBasedKeystore::new(&keystore_path)?);
+        let mut keystore = Keystore::from(FileBasedKeystore::load_or_create(&keystore_path)?);
         for key in &swarm.config().account_keys {
             keystore
                 .import(None, SuiKeyPair::Ed25519(key.copy()))
@@ -1344,8 +1344,7 @@ impl TestClusterBuilder {
 
         // Create wallet config with stated authorities port
         SuiClientConfig {
-            keystore: Keystore::from(FileBasedKeystore::new(&keystore_path)?),
-            external_keys: None,
+            keystore: Keystore::from(FileBasedKeystore::load_or_create(&keystore_path)?),
             envs: Default::default(),
             active_address,
             active_env: Default::default(),
