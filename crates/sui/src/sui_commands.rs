@@ -72,6 +72,7 @@ use sui_indexer_alt_reader::{
     system_package_task::SystemPackageTaskArgs,
 };
 
+use crate::external_signer::ExternalKeysCommand;
 use serde_json::json;
 use sui_keys::key_derive::generate_new_key;
 use sui_keys::keypair_file::read_key;
@@ -318,6 +319,18 @@ pub enum SuiCommand {
         #[clap(subcommand)]
         cmd: KeyToolCommand,
     },
+    /// Manage keys on external signers
+    ExternalKeys {
+        /// Sets the file storing the state of our user accounts (an empty one will be created if missing)
+        #[clap(long)]
+        keystore_path: Option<PathBuf>,
+        /// Return command outputs in json format
+        #[clap(long, global = true)]
+        json: bool,
+        /// Subcommands.
+        #[clap(subcommand)]
+        cmd: ExternalKeysCommand,
+    },
     /// Client for interacting with the Sui network.
     #[clap(name = "client")]
     Client {
@@ -457,7 +470,7 @@ impl SuiCommand {
                     no_full_node,
                     committee_size,
                 )
-                .await?;
+                    .await?;
 
                 Ok(())
             }
@@ -481,19 +494,31 @@ impl SuiCommand {
                     with_faucet,
                     committee_size,
                 )
-                .await
+                    .await
             }
             SuiCommand::GenesisCeremony(cmd) => run(cmd),
             SuiCommand::KeyTool {
-                keystore_path,
+                keystore_path: _,
                 json,
                 cmd,
             } => {
-                let keystore_path =
-                    keystore_path.unwrap_or(sui_config_dir()?.join(SUI_KEYSTORE_FILENAME));
-                let mut keystore =
-                    Keystore::from(FileBasedKeystore::load_or_create(&keystore_path)?);
-                cmd.execute(&mut keystore).await?.print(!json);
+                let config_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut context = WalletContext::new(&config_path)?;
+
+                cmd.execute(&mut context).await?.print(!json);
+                Ok(())
+            }
+            SuiCommand::ExternalKeys {
+                keystore_path: _,
+                json,
+                cmd,
+            } => {
+                let client_path = sui_config_dir()?.join(SUI_CLIENT_CONFIG);
+                let mut config = PersistedConfig::<SuiClientConfig>::read(&client_path)?;
+
+                cmd.execute(config.external_keys.as_mut())
+                    .await?
+                    .print(!json);
                 Ok(())
             }
             SuiCommand::Client {
@@ -562,7 +587,7 @@ impl SuiCommand {
                             client_config,
                             "sui move summary --package-id <object_id>",
                         )
-                        .await?;
+                            .await?;
                         let Some(client) = client else {
                             bail!(
                                 "`sui move summary --package-id <object_id>` requires a configured network"
@@ -575,7 +600,7 @@ impl SuiCommand {
                         // to let them know that we are changing it.
                         if !s.summary.bytecode {
                             eprintln!("{}",
-                            "[warning] `sui move summary --package-id <object_id>` only supports bytecode summaries. \
+                                      "[warning] `sui move summary --package-id <object_id>` only supports bytecode summaries. \
                              Falling back to producing a bytecode-based summary. To not get this warning you can run with `--bytecode`".yellow().bold()
                             );
                             s.summary.bytecode = true;
@@ -602,7 +627,7 @@ impl SuiCommand {
                             Some(sui_move::CommandMeta::Summary(package_metadata)),
                             &context,
                         )
-                        .await?;
+                            .await?;
                         Ok(())
                     }
                     sui_move::Command::Build(ref build) if build.dump_bytecode_as_base64 => {
@@ -614,14 +639,14 @@ impl SuiCommand {
                             build_config.environment.clone(),
                             &context,
                         )
-                        .await?;
+                            .await?;
 
                         let mut root_pkg = load_root_pkg_for_publish_upgrade(
                             &context,
                             &build_config,
                             &rerooted_path,
                         )
-                        .await?;
+                            .await?;
 
                         if !with_unpublished_deps {
                             let _ = check_for_unpublished_deps(&root_pkg, with_unpublished_deps)?;
@@ -638,8 +663,8 @@ impl SuiCommand {
                             print_diags_to_stderr: true,
                             environment,
                         }
-                        .build_async_from_root_pkg(&mut root_pkg)
-                        .await?;
+                            .build_async_from_root_pkg(&mut root_pkg)
+                            .await?;
 
                         let client = context.get_client().await?;
                         pkg_tree_shake(client.read_api(), with_unpublished_deps, &mut pkg).await?;
@@ -662,7 +687,7 @@ impl SuiCommand {
                             None,
                             &context,
                         )
-                        .await
+                            .await
                     }
                 }
             }
@@ -744,7 +769,7 @@ impl SuiCommand {
                         rgp,
                         1000000000,
                     )
-                    .unwrap();
+                        .unwrap();
                     let signed_tx = context.sign_transaction(&tx).await;
                     tasks.push(context.execute_transaction_must_succeed(signed_tx));
                 }
@@ -863,7 +888,7 @@ async fn start(
             Some(x) => NonZeroUsize::new(x),
             None => NonZeroUsize::new(1),
         }
-        .ok_or_else(|| anyhow!("Committee size must be at least 1."))?;
+            .ok_or_else(|| anyhow!("Committee size must be at least 1."))?;
         swarm_builder = swarm_builder.committee_size(committee_size);
         let genesis_config = GenesisConfig::custom_genesis(1, 100);
         swarm_builder = swarm_builder.with_genesis_config(genesis_config);
@@ -876,25 +901,25 @@ async fn start(
         // the sui config directory for backwards compatibility with `sui-test-validator`.
         let (network_config_path, sui_config_path) = match config {
             Some(config)
-                if config.is_file()
-                    && config
-                        .extension()
-                        .is_some_and(|e| e == "yml" || e == "yaml") =>
-            {
-                if committee_size.is_some() {
-                    eprintln!(
-                        "{}",
-                        "[warning] The committee-size arg wil be ignored as a network \
+            if config.is_file()
+                && config
+                .extension()
+                .is_some_and(|e| e == "yml" || e == "yaml") =>
+                {
+                    if committee_size.is_some() {
+                        eprintln!(
+                            "{}",
+                            "[warning] The committee-size arg wil be ignored as a network \
                             configuration already exists. To change the committee-size, you'll \
                             have to adjust the network configuration file or regenerate a genesis \
                             with the desired committee size. See `sui genesis --help` for more \
                             information."
-                            .yellow()
-                            .bold()
-                    );
+                                .yellow()
+                                .bold()
+                        );
+                    }
+                    (config, sui_config_dir()?)
                 }
-                (config, sui_config_dir()?)
-            }
 
             Some(config) => {
                 if committee_size.is_some() {
@@ -927,9 +952,9 @@ async fn start(
                         false,
                         committee_size,
                     )
-                    .await
-                    .map_err(|_| {
-                        anyhow!(
+                        .await
+                        .map_err(|_| {
+                            anyhow!(
                             "Cannot run genesis with non-empty Sui config directory: {}.\n\n\
                                 If you are trying to run a local network without persisting the \
                                 data (so a new genesis that is randomly generated and will not be \
@@ -939,7 +964,7 @@ async fn start(
                                 genesis.",
                             sui_config.display(),
                         )
-                    })?;
+                        })?;
                 } else if committee_size.is_some() {
                     eprintln!(
                         "{}",
@@ -1067,8 +1092,8 @@ async fn start(
             &prometheus_registry,
             cancel.child_token(),
         )
-        .await
-        .context("Failed to setup indexer")?;
+            .await
+            .context("Failed to setup indexer")?;
 
         let pipelines = indexer.pipelines().map(|s| s.to_string()).collect();
         let handle = indexer.run().await.context("Failed to start indexer")?;
@@ -1107,8 +1132,8 @@ async fn start(
             &prometheus_registry,
             cancel.child_token(),
         )
-        .await
-        .context("Failed to start Consistent Store")?;
+            .await
+            .context("Failed to start Consistent Store")?;
         rpc_services.push(handle);
 
         info!("Consistent Store started at {address}");
@@ -1155,8 +1180,8 @@ async fn start(
             &prometheus_registry,
             cancel.child_token(),
         )
-        .await
-        .context("Failed to start GraphQL server")?;
+            .await
+            .context("Failed to start GraphQL server")?;
         rpc_services.push(handle);
 
         info!("GraphQL started at {address}");
@@ -1215,16 +1240,16 @@ async fn start(
                 active_address: Some(address),
                 active_env: Some("localnet".to_string()),
             }
-            .persisted(config_dir.join(SUI_CLIENT_CONFIG).as_path())
-            .save()
-            .unwrap();
+                .persisted(config_dir.join(SUI_CLIENT_CONFIG).as_path())
+                .save()
+                .unwrap();
         }
 
         let local_faucet = LocalFaucet::new(
             create_wallet_context(config.wallet_client_timeout_secs, config_dir.clone())?,
             config.clone(),
         )
-        .await?;
+            .await?;
 
         let app_state = Arc::new(AppState {
             faucet: local_faucet,
@@ -1320,9 +1345,9 @@ async fn genesis(
                         } else {
                             fs::remove_dir_all(path)
                         }
-                        .map_err(|err| {
-                            anyhow!(err).context(format!("Cannot remove file {:?}", file.path()))
-                        })?;
+                            .map_err(|err| {
+                                anyhow!(err).context(format!("Cannot remove file {:?}", file.path()))
+                            })?;
                     }
                 }
             } else {
@@ -1392,7 +1417,7 @@ async fn genesis(
         Some(x) => NonZeroUsize::new(x),
         None => NonZeroUsize::new(1),
     }
-    .ok_or_else(|| anyhow!("Committee size must be at least 1."))?;
+        .ok_or_else(|| anyhow!("Committee size must be at least 1."))?;
 
     let mut network_config = if let Some(validators) = validator_info {
         builder
@@ -1604,7 +1629,7 @@ async fn prompt_if_no_config(
                 // Wallet config was requested at the root of the file system ...for some reason.
                 None => wallet_conf_path.to_owned(),
             }
-            .join(SUI_KEYSTORE_FILENAME);
+                .join(SUI_KEYSTORE_FILENAME);
 
             let mut keystore = Keystore::from(FileBasedKeystore::load_or_create(&keystore_path)?);
             let key_scheme = if accept_defaults {
@@ -1635,8 +1660,8 @@ async fn prompt_if_no_config(
                 active_address: Some(new_address),
                 active_env: Some(alias),
             }
-            .persisted(wallet_conf_path)
-            .save()?;
+                .persisted(wallet_conf_path)
+                .save()?;
 
             let context = WalletContext::new(wallet_conf_path)?;
             let _ = context.cache_chain_id(&context.get_client().await?).await?;
