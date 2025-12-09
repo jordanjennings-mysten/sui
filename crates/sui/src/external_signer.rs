@@ -4,7 +4,7 @@ use std::fmt::{Debug, Display, Formatter};
 use crate::keytool::Key;
 use anyhow::anyhow;
 use clap::*;
-use json_to_table::{json_to_table, Orientation};
+use json_to_table::{Orientation, json_to_table};
 use serde::Serialize;
 use serde_json::json;
 use sui_keys::external::External;

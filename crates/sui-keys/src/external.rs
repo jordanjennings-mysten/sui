@@ -2,21 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::keystore::{
-    validate_alias, AccountKeystore, Alias, GenerateOptions, GeneratedKey, ALIASES_FILE_EXTENSION,
+    ALIASES_FILE_EXTENSION, AccountKeystore, Alias, GenerateOptions, GeneratedKey, validate_alias,
 };
 use crate::random_names::random_name;
 
-use anyhow::{anyhow, bail};
 use anyhow::{Context, Error};
+use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use base64;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use bcs;
 use fastcrypto::traits::{EncodeDecodeBase64, VerifyingKey};
 use jsonrpc::client::Endpoint;
 use mockall::{automock, predicate::*};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use shared_crypto::intent::{Intent, IntentMessage};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
@@ -78,7 +78,7 @@ pub struct SignResponse {
 #[async_trait]
 pub trait CommandRunner: Send + Sync + Debug {
     async fn run(&self, command: &str, method: &str, params: JsonValue)
-        -> Result<JsonValue, Error>;
+    -> Result<JsonValue, Error>;
 }
 
 #[derive(Debug)]
@@ -253,17 +253,13 @@ impl External {
     }
 
     /// Get the public key for a given key ID from an external signer.
-    pub async fn get_public_key(
-        &self,
-        ext_signer: &String,
-        key_id: &String,
-    ) -> Result<StoredKey, Error> {
+    pub async fn get_public_key(&self, ext_signer: &str, key_id: &str) -> Result<StoredKey, Error> {
         let result = self.exec(ext_signer, "public_key", json![key_id]).await?;
         let public_key: ExternalKey = serde_json::from_value(result)
             .map_err(|e| anyhow!("Failed to parse public key response: {}", e))?;
         Ok(StoredKey {
             public_key: public_key.public_key,
-            ext_signer: ext_signer.clone(),
+            ext_signer: ext_signer.to_owned(),
             key_id: public_key.key_id,
         })
     }
@@ -375,12 +371,10 @@ impl AccountKeystore for External {
         // Attempt to generate, fallback to adding an existing key.
         let stored_key = match self.exec(&ext_signer, "create_key", json![null]).await {
             Ok(res) => serde_json::from_value(res)
-                .and_then(|k: ExternalKey| {
-                    Ok(StoredKey {
-                        public_key: k.public_key,
-                        ext_signer: ext_signer.clone(),
-                        key_id: k.key_id,
-                    })
+                .map(|k: ExternalKey| StoredKey {
+                    public_key: k.public_key,
+                    ext_signer: ext_signer.clone(),
+                    key_id: k.key_id,
                 })
                 .map_err(|e| anyhow!("Failed to parse key response from external signer: {}", e)),
             Err(_) => self.add_first_unindexed_key(ext_signer).await,
@@ -672,15 +666,15 @@ mod tests {
     use fastcrypto::traits::{EncodeDecodeBase64, KeyPair, ToFromBytes};
     use mockall::predicate::eq;
     use rand::prelude::StdRng;
-    use rand::{thread_rng, SeedableRng};
+    use rand::{SeedableRng, thread_rng};
     use serde_json::Value as JsonValue;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use shared_crypto::intent::{Intent, IntentMessage};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::str::FromStr;
     use sui_types::base_types::SuiAddress;
-    use sui_types::crypto::SignatureScheme::{Secp256k1, ED25519};
+    use sui_types::crypto::SignatureScheme::{ED25519, Secp256k1};
     use sui_types::crypto::{PublicKey, Signature, SuiKeyPair};
     use tempfile::TempDir;
 
@@ -798,10 +792,12 @@ mod tests {
 
         let external = External::new_for_test(Box::new(mock), None);
         let params = json!(["arg1", "arg2"]);
-        assert!(external
-            .exec("sui-key-tool", "test_method", params)
-            .await
-            .is_ok());
+        assert!(
+            external
+                .exec("sui-key-tool", "test_method", params)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -1195,9 +1191,11 @@ mod tests {
         let external = load_external_keystore();
         let addresses_with_alias = external.addresses_with_alias();
         assert!(!addresses_with_alias.is_empty());
-        assert!(addresses_with_alias
-            .iter()
-            .any(|(addr, alias)| { addr.to_string() == ADDRESS && alias.alias == "test_alias" }));
+        assert!(
+            addresses_with_alias.iter().any(|(addr, alias)| {
+                addr.to_string() == ADDRESS && alias.alias == "test_alias"
+            })
+        );
     }
 
     #[test]

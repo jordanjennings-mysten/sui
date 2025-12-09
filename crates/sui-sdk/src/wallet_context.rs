@@ -88,7 +88,7 @@ impl WalletContext {
         let mut addresses = self.config.keystore.addresses();
 
         if let Some(external_keys) = &self.config.external_keys {
-            addresses.extend(external_keys.addresses().into_iter());
+            addresses.extend(external_keys.addresses());
         }
 
         addresses
@@ -98,7 +98,7 @@ impl WalletContext {
         let mut addresses = self.config.keystore.addresses_with_alias();
 
         if let Some(external_keys) = &self.config.external_keys {
-            addresses.extend(external_keys.addresses_with_alias().into_iter());
+            addresses.extend(external_keys.addresses_with_alias());
         }
 
         addresses
@@ -476,20 +476,19 @@ impl WalletContext {
             .config
             .keystore
             .get_by_identity(key_identity)
-            .and_then(|address| Ok(self.config.keystore.addresses().contains(&address)))
+            .map(|address| self.config.keystore.addresses().contains(&address))
             .unwrap_or(false)
         {
             return Ok(&self.config.keystore);
         }
 
-        if let Some(external_keys) = self.config.external_keys.as_ref() {
-            if external_keys
+        if let Some(external_keys) = self.config.external_keys.as_ref()
+            && external_keys
                 .get_by_identity(key_identity)
-                .and_then(|address| Ok(external_keys.addresses().contains(&address)))
+                .map(|address| external_keys.addresses().contains(&address))
                 .unwrap_or(false)
-            {
-                return Ok(external_keys);
-            }
+        {
+            return Ok(external_keys);
         }
 
         Err(anyhow!(

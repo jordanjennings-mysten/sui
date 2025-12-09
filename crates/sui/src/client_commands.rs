@@ -3243,19 +3243,19 @@ pub(crate) async fn dry_run_or_execute_or_serialize(
                 .into(),
         ];
 
-        if let Some(gas_sponsor) = gas_sponsor {
-            if gas_sponsor != signer {
-                signatures.push(
-                    context
-                        .sign_secure(
-                            &KeyIdentity::Address(gas_sponsor),
-                            &tx_data,
-                            Intent::sui_transaction(),
-                        )
-                        .await?
-                        .into(),
-                );
-            }
+        if let Some(gas_sponsor) = gas_sponsor
+            && gas_sponsor != signer
+        {
+            signatures.push(
+                context
+                    .sign_secure(
+                        &KeyIdentity::Address(gas_sponsor),
+                        &tx_data,
+                        Intent::sui_transaction(),
+                    )
+                    .await?
+                    .into(),
+            );
         }
 
         let sender_signed_data = SenderSignedData::new(tx_data, signatures);
