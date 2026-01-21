@@ -50,6 +50,7 @@ use sui_types::{
     object::Object,
     type_input::{StructInput, TypeInput},
 };
+use sui_types::error::ExecutionErrorTrait;
 
 pub struct Env<'pc, 'vm, 'state, 'linkage> {
     pub protocol_config: &'pc ProtocolConfig,
@@ -716,12 +717,12 @@ fn to_identifier(name: String) -> Result<Identifier, ExecutionError> {
     })
 }
 
-fn convert_vm_error(
+fn convert_vm_error<E: ExecutionErrorTrait>(
     error: VMError,
     vm: &MoveVM,
     store: &dyn PackageStore,
     linkage: Option<&RootedLinkage>,
-) -> ExecutionError {
+) -> E {
     use crate::error::convert_vm_error_impl;
     convert_vm_error_impl(
         error,

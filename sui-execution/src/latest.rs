@@ -14,7 +14,7 @@ use sui_types::{
     committee::EpochId,
     digests::TransactionDigest,
     effects::TransactionEffects,
-    error::{ExecutionError, SuiError, SuiResult},
+    error::{ExecutionError, ExecutionErrorWithContext, SuiError, SuiResult},
     execution::{ExecutionResult, TypeLayoutStore},
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
@@ -85,6 +85,48 @@ impl executor::Executor for Executor {
         Result<(), ExecutionError>,
     ) {
         execute_transaction_to_effects::<execution_mode::Normal>(
+            store,
+            input_objects,
+            gas,
+            gas_status,
+            transaction_kind,
+            transaction_signer,
+            transaction_digest,
+            &self.0,
+            epoch_id,
+            epoch_timestamp_ms,
+            protocol_config,
+            metrics,
+            enable_expensive_checks,
+            execution_params,
+            trace_builder_opt,
+        )
+    }
+
+    fn execute_transaction_to_effects_with_error_context(
+        &self,
+        store: &dyn BackingStore,
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        execution_params: ExecutionOrEarlyError,
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        input_objects: CheckedInputObjects,
+        gas: GasData,
+        gas_status: SuiGasStatus,
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Vec<ExecutionTiming>,
+        Result<(), ExecutionErrorWithContext>,
+    ) {
+        execute_transaction_to_effects::<execution_mode::FullNode>(
             store,
             input_objects,
             gas,

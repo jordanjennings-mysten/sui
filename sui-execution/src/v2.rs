@@ -33,6 +33,7 @@ use sui_adapter_v2::execution_engine::{
 use sui_adapter_v2::execution_mode;
 use sui_adapter_v2::type_layout_resolver::TypeLayoutResolver;
 use sui_move_natives_v2::all_natives;
+use sui_types::error::ExecutionErrorWithContext;
 use sui_types::storage::BackingStore;
 use sui_verifier_v2::meter::SuiVerifierMeter;
 
@@ -105,6 +106,51 @@ impl executor::Executor for Executor {
             );
         // note: old versions do not report timings.
         (inner_temp_store, gas_status, effects, vec![], result)
+    }
+
+    fn execute_transaction_to_effects_with_error_context(
+        &self,
+        store: &dyn BackingStore,
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        execution_params: ExecutionOrEarlyError,
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        input_objects: CheckedInputObjects,
+        gas: GasData,
+        gas_status: SuiGasStatus,
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        _trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Vec<ExecutionTiming>,
+        Result<(), ExecutionErrorWithContext>,
+    ) {
+        let gas_coins = gas.payment;
+        let (inner_temp_store, gas_status, effects, result) =
+            execute_transaction_to_effects::<execution_mode::Normal>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                execution_params,
+            );
+        // note: old versions do not report timings.
+        (inner_temp_store, gas_status, effects, vec![], result.map_err(|e|e.into()))
     }
 
     fn dev_inspect_transaction(
