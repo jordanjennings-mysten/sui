@@ -58,6 +58,7 @@ use sui_types::{
 };
 use sui_verifier::INIT_FN_NAME;
 use tracing::instrument;
+use sui_types::error::ExecutionErrorTrait;
 
 macro_rules! unwrap {
     ($e:expr, $($args:expr),* $(,)?) => {
@@ -815,12 +816,12 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         }
     }
 
-    fn publish_and_verify_modules(
+    fn publish_and_verify_modules<E: ExecutionErrorTrait>(
         &mut self,
         package_id: ObjectID,
         modules: &[CompiledModule],
         linkage: &RootedLinkage,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         // TODO(https://github.com/MystenLabs/sui/issues/69): avoid this redundant serialization by exposing VM API that allows us to run the linker directly on `Vec<CompiledModule>`
         let binary_version = self.env.protocol_config.move_binary_format_version();
         let new_module_bytes: Vec<_> = modules
@@ -865,13 +866,13 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         Ok(())
     }
 
-    fn init_modules(
+    fn init_modules<E: ExecutionErrorTrait>(
         &mut self,
         package_id: ObjectID,
         modules: &[CompiledModule],
         linkage: &RootedLinkage,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         for module in modules {
             let Some((fdef_idx, fdef)) = module.find_function_def_by_name(INIT_FN_NAME.as_str())
             else {
@@ -932,7 +933,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         dep_ids: &[ObjectID],
         linkage: ResolvedLinkage,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<ObjectID, ExecutionError> {
+    ) -> Result<ObjectID, Mode::Error> {
         let runtime_id = if <Mode>::packages_are_predefined() {
             // do not calculate or substitute id for predefined packages
             (*modules[0].self_id().address()).into()
@@ -973,14 +974,14 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         }
     }
 
-    pub fn upgrade(
+    pub fn upgrade<E: ExecutionErrorTrait>(
         &mut self,
         mut modules: Vec<CompiledModule>,
         dep_ids: &[ObjectID],
         current_package_id: ObjectID,
         upgrade_ticket_policy: u8,
         linkage: ResolvedLinkage,
-    ) -> Result<ObjectID, ExecutionError> {
+    ) -> Result<ObjectID, E> {
         // Check that this package ID points to a package and get the package we're upgrading.
         let current_move_package = self.fetch_package(&current_package_id)?;
 
@@ -1002,7 +1003,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         )?;
 
         let linkage = RootedLinkage::new_for_publication(storage_id, runtime_id, linkage);
-        self.publish_and_verify_modules(runtime_id, &modules, &linkage)?;
+        self.publish_and_verify_modules::<E>(runtime_id, &modules, &linkage)?;
 
         legacy_ptb::execution::check_compatibility(
             self.env.protocol_config,
@@ -1044,9 +1045,9 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
             });
             if new_module_has_init {
                 // TODO we cannot run 'init' on upgrade yet due to global type cache limitations
-                return Err(ExecutionError::new_with_source(
+                return Err(E::new_with_source(
                     ExecutionErrorKind::FeatureNotYetSupported,
-                    "`init` in new modules on upgrade is not yet supported",
+                    "`init` in new modules on upgrade is not yet supported".into(),
                 ));
             }
         }

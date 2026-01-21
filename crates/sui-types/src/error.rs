@@ -11,6 +11,7 @@ use crate::{
     object::Owner,
 };
 
+use move_binary_format::errors::VMError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt::Debug};
@@ -1097,6 +1098,46 @@ type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 pub type ExecutionErrorKind = ExecutionFailureStatus;
 
+// Use ExecutionError if you are unsure.
+pub trait ExecutionErrorTrait:
+    std::fmt::Debug + std::fmt::Display + std::error::Error + Send + Sync + From<ExecutionErrorKind> + From<ExecutionError>
+{
+    fn kind(&self) -> &ExecutionErrorKind;
+    fn command(&self) -> Option<CommandIndex>;
+
+    fn to_execution_status(&self) -> (ExecutionFailureStatus, Option<CommandIndex>) {
+        (self.kind().clone(), self.command())
+    }
+
+    fn invariant_violation<E: Into<BoxError>>(source: E) -> Self
+    where
+        Self: Sized,
+    {
+        Self::new_with_source(ExecutionFailureStatus::InvariantViolation, source.into())
+    }
+
+    fn new_with_source(kind: ExecutionErrorKind, source: BoxError) -> Self;
+
+    fn with_command_index(mut self, command: CommandIndex) -> Self;
+
+    fn from_kind(kind: ExecutionErrorKind) -> Self
+    where
+        Self: Sized,
+    {
+        Self::new_with_source(kind, Box::new(std::io::Error::new(std::io::ErrorKind::Other, "No source error")))
+    }
+
+    fn command_argument_error(e: CommandArgumentError, arg_idx: usize) -> Self
+    where
+        Self: Sized,
+    {
+        Self::from_kind(ExecutionErrorKind::command_argument_error(
+            e,
+            arg_idx as u16,
+        ))
+    }
+}
+
 #[derive(Debug)]
 pub struct ExecutionError {
     inner: Box<ExecutionErrorInner>,
@@ -1166,6 +1207,26 @@ impl std::error::Error for ExecutionError {
     }
 }
 
+impl ExecutionErrorTrait for ExecutionError {
+    fn kind(&self) -> &ExecutionErrorKind {
+        &self.inner.kind
+    }
+
+    fn command(&self) -> Option<CommandIndex> {
+        self.inner.command
+    }
+
+    fn new_with_source(kind: ExecutionErrorKind, source: BoxError) -> Self {
+        Self::new(kind, Some(source))
+    }
+
+    fn with_command_index(mut self, command: CommandIndex) -> Self {
+        self.inner.command = Some(command);
+        self
+    }
+
+}
+
 impl From<ExecutionErrorKind> for ExecutionError {
     fn from(kind: ExecutionErrorKind) -> Self {
         Self::from_kind(kind)
@@ -1177,6 +1238,18 @@ pub fn command_argument_error(e: CommandArgumentError, arg_idx: usize) -> Execut
         e,
         arg_idx as u16,
     ))
+}
+
+impl From<ExecutionError> for ExecutionErrorWithContext {
+    fn from(error: ExecutionError) -> Self {
+        let inner = *error.inner;
+        let mut context = Self::new(inner.kind);
+        if let Some(source) = inner.source {
+            context.source.push(source);
+        }
+        context.command = inner.command;
+        context
+    }
 }
 
 /// Types of SuiError.
@@ -1206,5 +1279,117 @@ impl ErrorCategory {
                 | ErrorCategory::ValidatorOverloaded
                 | ErrorCategory::Unavailable
         )
+    }
+}
+
+use itertools::Itertools;
+
+impl std::fmt::Display for ExecutionErrorWithContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Error Context: {}",
+            self.source.iter().map(|e| e.to_string()).join(", ")
+        )
+    }
+}
+
+impl std::fmt::Debug for ExecutionErrorWithContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Error Context: {}",
+            self.source.iter().map(|e| e.to_string()).join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ExecutionErrorWithContext {}
+
+pub struct ExecutionErrorWithContext {
+    pub source: Vec<BoxError>,
+    pub kind: ExecutionErrorKind,
+    pub command: Option<CommandIndex>,
+}
+
+impl ExecutionErrorWithContext {
+    pub fn new(kind: ExecutionErrorKind) -> Self {
+        Self {
+            source: vec![],
+            kind,
+            command: None,
+        }
+    }
+
+    pub fn from_vm_error(kind: ExecutionErrorKind, vm_error: &VMError) -> Self {
+        let mut context = Self::new(kind);
+        context.source.push(Box::new(vm_error.clone()));
+        context
+    }
+
+    pub fn with_vm_error_properties(mut self, vm_error: &VMError) -> Self {
+        self.source.push(Box::new(vm_error.clone()));
+        self
+    }
+
+    pub fn from_message(kind: ExecutionErrorKind, message: &str) -> Self {
+        Self {
+            source: vec![message.to_string().into()],
+            kind,
+            command: None,
+        }
+    }
+
+    pub fn with_command_index(mut self, command: CommandIndex) -> Self {
+        self.command = Some(command);
+        self
+    }
+}
+
+impl From<ExecutionErrorWithContext> for ExecutionError {
+    fn from(mut ctx: ExecutionErrorWithContext) -> Self {
+        let source = if ctx.source.is_empty() {
+            None
+        } else if ctx.source.len() == 1 {
+            Some(ctx.source.pop().unwrap())
+        } else {
+            // we have lost the type information here
+            Some(format!("{:?}", ctx.source).into())
+        };
+
+        let mut err = ExecutionError::new(ctx.kind, source);
+        if let Some(cmd) = ctx.command {
+            err = err.with_command_index(cmd);
+        }
+        err
+    }
+}
+
+impl From<ExecutionErrorKind> for ExecutionErrorWithContext {
+    fn from(value: ExecutionErrorKind) -> Self {
+        todo!()
+    }
+}
+
+impl ExecutionErrorTrait for ExecutionErrorWithContext {
+    fn kind(&self) -> &ExecutionErrorKind {
+        &self.kind
+    }
+
+    fn command(&self) -> Option<CommandIndex> {
+        self.command
+    }
+    fn to_execution_status(&self) -> (ExecutionFailureStatus, Option<CommandIndex>) {
+        (self.kind().clone(), self.command())
+    }
+    fn new_with_source(kind: ExecutionErrorKind, source: BoxError) -> Self {
+        let mut context = Self::new(kind);
+        context.source.push(source);
+        context
+    }
+
+    fn with_command_index(mut self, command: CommandIndex) -> Self {
+        self.command = Some(command);
+        self
     }
 }

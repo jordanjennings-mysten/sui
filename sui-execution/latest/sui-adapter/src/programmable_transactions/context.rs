@@ -65,7 +65,7 @@ mod checked {
         base_types::{MoveObjectType, ObjectID, SuiAddress, TxContext},
         coin::Coin,
         effects::{AccumulatorAddress, AccumulatorValue, AccumulatorWriteV1},
-        error::{ExecutionError, ExecutionErrorKind, SuiError, command_argument_error},
+        error::{ExecutionError, ExecutionErrorKind, ExecutionErrorTrait, SuiError, command_argument_error},
         event::Event,
         execution::{ExecutionResults, ExecutionResultsV2},
         execution_status::CommandArgumentError,
@@ -150,7 +150,7 @@ mod checked {
 
     impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
         #[instrument(name = "ExecutionContext::new", level = "trace", skip_all)]
-        pub fn new(
+        pub fn new<E: ExecutionErrorTrait>(
             protocol_config: &'a ProtocolConfig,
             metrics: Arc<LimitsMetrics>,
             vm: &'vm MoveVM,
@@ -158,7 +158,7 @@ mod checked {
             tx_context: Rc<RefCell<TxContext>>,
             gas_charger: &'a mut GasCharger,
             inputs: Vec<CallArg>,
-        ) -> Result<Self, ExecutionError>
+        ) -> Result<Self, E>
         where
             'a: 'state,
         {
@@ -184,7 +184,7 @@ mod checked {
                 .collect::<Result<_, ExecutionError>>()?;
             std::mem::drop(tx_context_ref);
             let gas = if let Some(gas_coin) = gas_charger.gas_coin() {
-                let mut gas = load_object(
+                let mut gas = load_object::<E>(
                     protocol_config,
                     vm,
                     state_view,
@@ -259,12 +259,12 @@ mod checked {
         }
 
         /// Create a new ID and update the state
-        pub fn fresh_id(&mut self) -> Result<ObjectID, ExecutionError> {
+        pub fn fresh_id<E: ExecutionErrorTrait>(&mut self) -> Result<ObjectID, E> {
             let object_id = self.tx_context.borrow_mut().fresh_id();
             self.native_extensions
                 .get_mut()
                 .and_then(|object_runtime: &mut ObjectRuntime| object_runtime.new_id(object_id))
-                .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))?;
+                .map_err(|e| self.convert_vm_error::<E>(e.finish(Location::Undefined)))?;
             Ok(object_id)
         }
 
@@ -278,10 +278,10 @@ mod checked {
 
         /// Set the link context for the session from the linkage information in the MovePackage found
         /// at `package_id`.  Returns the runtime ID of the link context package on success.
-        pub fn set_link_context(
+        pub fn set_link_context<E: ExecutionErrorTrait>(
             &mut self,
             package_id: ObjectID,
-        ) -> Result<AccountAddress, ExecutionError> {
+        ) -> Result<AccountAddress, E> {
             if self.linkage_view.has_linkage(package_id)? {
                 // Setting same context again, can skip.
                 return Ok(self
@@ -291,9 +291,9 @@ mod checked {
             }
 
             let move_package = get_package(&self.linkage_view, package_id)
-                .map_err(|e| self.convert_vm_error(e))?;
+                .map_err(|e| self.convert_vm_error::<E>(e))?;
 
-            self.linkage_view.set_linkage(&move_package)
+            self.linkage_view.set_linkage(&move_package).map_err(|e| e.into())
         }
 
         /// Load a type using the context's current session.
@@ -315,17 +315,17 @@ mod checked {
 
         /// Takes the user events from the runtime and tags them with the Move module of the function
         /// that was invoked for the command
-        pub fn take_user_events(
+        pub fn take_user_events<E: ExecutionErrorTrait>(
             &mut self,
             module_id: &ModuleId,
             function: FunctionDefinitionIndex,
             last_offset: CodeOffset,
-        ) -> Result<(), ExecutionError> {
+        ) -> Result<(), E> {
             let events = self
                 .native_extensions
                 .get_mut()
                 .map(|object_runtime: &mut ObjectRuntime| object_runtime.take_user_events())
-                .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))?;
+                .map_err(|e| self.convert_vm_error::<E>(e.finish(Location::Undefined)))?;
             let num_events = self.user_events.len() + events.len();
             let max_events = self.protocol_config.max_num_event_emit();
             if num_events as u64 > max_events {
@@ -336,14 +336,14 @@ mod checked {
             }
             let new_events = events
                 .into_iter()
-                .map(|(tag, value)| {
+                .map(|(tag, value)| -> Result<_, E> {
                     let type_tag = TypeTag::Struct(Box::new(tag.clone()));
                     let ty = unwrap_type_tag_load(
                         self.protocol_config,
                         self.vm
                             .get_runtime()
                             .try_load_cached_type(&type_tag)
-                            .map_err(|e| self.convert_vm_error(e))?
+                            .map_err(|e| self.convert_vm_error::<E>(e))?
                             .ok_or_else(|| {
                                 make_invariant_violation!(
                                     "Failed to load type for event tag: {}",
@@ -355,13 +355,13 @@ mod checked {
                         .vm
                         .get_runtime()
                         .type_to_type_layout(&ty)
-                        .map_err(|e| self.convert_vm_error(e))?;
+                        .map_err(|e| self.convert_vm_error::<E>(e))?;
                     let Some(bytes) = value.typed_serialize(&layout) else {
                         invariant_violation!("Failed to deserialize already serialized Move value");
                     };
                     Ok((module_id.clone(), tag, bytes))
                 })
-                .collect::<Result<Vec<_>, ExecutionError>>()?;
+                .collect::<Result<Vec<_>, E>>()?;
             self.user_events.extend(new_events);
             Ok(())
         }
@@ -664,7 +664,7 @@ mod checked {
             updates: &mut Mode::ArgumentUpdates,
             arg: Arg,
             value: Value,
-        ) -> Result<(), ExecutionError> {
+        ) -> Result<(), Mode::Error> {
             let per_command_shared_object_transfer_rules = self
                 .protocol_config
                 .per_command_shared_object_transfer_rules();
@@ -710,38 +710,38 @@ mod checked {
         }
 
         /// Transfer the object to a new owner
-        pub fn transfer_object(
+        pub fn transfer_object<E: ExecutionErrorTrait>(
             &mut self,
             obj: ObjectValue,
             addr: SuiAddress,
-        ) -> Result<(), ExecutionError> {
+        ) -> Result<(), E> {
             self.additional_transfers.push((addr, obj));
             Ok(())
         }
 
         /// Create a new package
-        pub fn new_package<'p>(
+        pub fn new_package<'p, E: ExecutionErrorTrait>(
             &self,
             modules: &[CompiledModule],
             dependencies: impl IntoIterator<Item = &'p MovePackage>,
-        ) -> Result<MovePackage, ExecutionError> {
-            MovePackage::new_initial(modules, self.protocol_config, dependencies)
+        ) -> Result<MovePackage, E> {
+            MovePackage::new_initial(modules, self.protocol_config, dependencies).map_err(|e| e.into())
         }
 
         /// Create a package upgrade from `previous_package` with `new_modules` and `dependencies`
-        pub fn upgrade_package<'p>(
+        pub fn upgrade_package<'p, E: ExecutionErrorTrait>(
             &self,
             storage_id: ObjectID,
             previous_package: &MovePackage,
             new_modules: &[CompiledModule],
             dependencies: impl IntoIterator<Item = &'p MovePackage>,
-        ) -> Result<MovePackage, ExecutionError> {
+        ) -> Result<MovePackage, E> {
             previous_package.new_upgraded(
                 storage_id,
                 new_modules,
                 self.protocol_config,
                 dependencies,
-            )
+            ).map_err(|e| e.into())
         }
 
         /// Add a newly created package to write as an effect of the transaction
@@ -758,11 +758,11 @@ mod checked {
         }
 
         /// Finish a command: clearing the borrows and adding the results to the result vector
-        pub fn push_command_results(
+        pub fn push_command_results<E: ExecutionErrorTrait>(
             &mut self,
             command_kind: CommandKind,
             mut results: Vec<Value>,
-        ) -> Result<(), ExecutionError> {
+        ) -> Result<(), E> {
             assert_invariant!(
                 self.borrowed.values().all(|is_mut| !is_mut),
                 "all mut borrows should be restored"
@@ -801,7 +801,7 @@ mod checked {
         }
 
         /// Determine the object changes and collect all user events
-        pub fn finish<Mode: ExecutionMode>(self) -> Result<ExecutionResults, ExecutionError> {
+        pub fn finish<Mode: ExecutionMode>(self) -> Result<ExecutionResults, Mode::Error> {
             let Self {
                 protocol_config,
                 vm,
@@ -897,12 +897,12 @@ mod checked {
                                     } else {
                                         "Unused value without drop"
                                     };
-                                    return Err(ExecutionError::new_with_source(
+                                    return Err(Mode::Error::new_with_source(
                                         ExecutionErrorKind::UnusedValueWithoutDrop {
                                             result_idx: i as u16,
                                             secondary_idx: j as u16,
                                         },
-                                        msg,
+                                        msg.into(),
                                     ));
                                 }
                             }
@@ -922,7 +922,7 @@ mod checked {
                 refund_max_gas_budget(&mut additional_writes, gas_charger, gas_id)?;
             }
 
-            let object_runtime: ObjectRuntime = native_extensions.remove().map_err(|e| {
+            let object_runtime: ObjectRuntime = native_extensions.remove().map_err(|e| -> Mode::Error {
                 convert_vm_error(
                     e.finish(Location::Undefined),
                     vm,
@@ -988,7 +988,7 @@ mod checked {
                     vm.get_runtime()
                         .try_load_cached_type(&TypeTag::from(tag.clone()))
                         .map_err(|e| {
-                            convert_vm_error(
+                            convert_vm_error::<_, Mode::Error>(
                                 e,
                                 vm,
                                 &linkage_view,
@@ -1000,7 +1000,7 @@ mod checked {
                         }),
                 )?;
                 let abilities = vm.get_runtime().get_type_abilities(&ty).map_err(|e| {
-                    convert_vm_error(
+                    convert_vm_error::<_, Mode::Error>(
                         e,
                         vm,
                         &linkage_view,
@@ -1009,7 +1009,7 @@ mod checked {
                 })?;
                 let has_public_transfer = abilities.has_store();
                 let layout = vm.get_runtime().type_to_type_layout(&ty).map_err(|e| {
-                    convert_vm_error(
+                    convert_vm_error::<_, Mode::Error>(
                         e,
                         vm,
                         &linkage_view,
@@ -1055,7 +1055,7 @@ mod checked {
         }
 
         /// Convert a VM Error to an execution one
-        pub fn convert_vm_error(&self, error: VMError) -> ExecutionError {
+        pub fn convert_vm_error<E: ExecutionErrorTrait>(&self, error: VMError) -> E {
             convert_vm_error(
                 error,
                 self.vm,
@@ -1065,7 +1065,7 @@ mod checked {
         }
 
         /// Special case errors for type arguments to Move functions
-        pub fn convert_type_argument_error(&self, idx: usize, error: VMError) -> ExecutionError {
+        pub fn convert_type_argument_error<E: ExecutionErrorTrait>(&self, idx: usize, error: VMError) -> E {
             convert_type_argument_error(
                 idx,
                 error,
@@ -1317,10 +1317,10 @@ mod checked {
             }
         }
 
-        pub(crate) fn deserialize_modules(
+        pub(crate) fn deserialize_modules<E: ExecutionErrorTrait>(
             &self,
             module_bytes: &[Vec<u8>],
-        ) -> Result<Vec<CompiledModule>, ExecutionError> {
+        ) -> Result<Vec<CompiledModule>, E> {
             let binary_config = self.protocol_config.binary_config(None);
             let modules = module_bytes
                 .iter()
@@ -1329,7 +1329,7 @@ mod checked {
                         .map_err(|e| e.finish(Location::Undefined))
                 })
                 .collect::<VMResult<Vec<CompiledModule>>>()
-                .map_err(|e| self.convert_vm_error(e))?;
+                .map_err(|e| self.convert_vm_error::<E>(e))?;
 
             assert_invariant!(
                 !modules.is_empty(),
@@ -1415,7 +1415,7 @@ mod checked {
         Ok(())
     }
 
-    pub fn finish(
+    pub fn finish<E: ExecutionErrorTrait>(
         protocol_config: &ProtocolConfig,
         state_view: &dyn ExecutionState,
         gas_charger: &mut GasCharger,
@@ -1430,7 +1430,7 @@ mod checked {
         accumulator_events: Vec<MoveAccumulatorEvent>,
         settlement_input_sui: u64,
         settlement_output_sui: u64,
-    ) -> Result<ExecutionResults, ExecutionError> {
+    ) -> Result<ExecutionResults, E> {
         // Before finishing, ensure that any shared object taken by value by the transaction is either:
         // 1. Mutated (and still has a shared ownership); or
         // 2. Deleted.
@@ -1446,16 +1446,14 @@ mod checked {
                             per_command_shared_object_transfer_rules is enabled"
                         )
                     } else {
-                        return Err(ExecutionError::new(
+                        return Err(E::new_with_source(
                             ExecutionErrorKind::SharedObjectOperationNotAllowed,
-                            Some(
                                 format!(
                                     "Shared object operation on {} not allowed: \
                                      cannot be frozen, transferred, or wrapped",
                                     id
                                 )
                                 .into(),
-                            ),
                         ));
                     }
                 }
@@ -1469,12 +1467,10 @@ mod checked {
                             per_command_shared_object_transfer_rules is enabled"
                         )
                     } else {
-                        return Err(ExecutionError::new(
+                        return Err(E::new_with_source(
                             ExecutionErrorKind::SharedObjectOperationNotAllowed,
-                            Some(
                                 format!("Shared object operation on {} not allowed: \
                                          shared objects used by value must be re-shared if not deleted", id).into(),
-                            ),
                         ));
                     }
                 }
@@ -1501,12 +1497,10 @@ mod checked {
                         id,
                     );
                 } else {
-                    return Err(ExecutionError::new(
+                    return Err(E::new_with_source(
                                 ExecutionErrorKind::SharedObjectOperationNotAllowed,
-                                Some(
                                     format!("Shared object operation on {} not allowed: \
                                              transaction with singly owned input object must be sent by the owner", id).into(),
-                                ),
                             ));
                 }
             }
@@ -1717,7 +1711,7 @@ mod checked {
         })
     }
 
-    pub(crate) fn make_object_value(
+    pub(crate) fn make_object_value<E: ExecutionErrorTrait>(
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         linkage_view: &mut LinkageView,
@@ -1726,7 +1720,7 @@ mod checked {
         has_public_transfer: bool,
         used_in_non_entry_move_call: bool,
         contents: &[u8],
-    ) -> Result<ObjectValue, ExecutionError> {
+    ) -> Result<ObjectValue, E> {
         let contents = if type_.is_coin() {
             let Ok(coin) = Coin::from_bcs_bytes(contents) else {
                 invariant_violation!("Could not deserialize a coin")
@@ -1738,7 +1732,7 @@ mod checked {
 
         let tag: StructTag = type_.into();
         let type_ = load_type_from_struct(vm, linkage_view, new_packages, &tag).map_err(|e| {
-            convert_vm_error(
+            convert_vm_error::<_, E>(
                 e,
                 vm,
                 linkage_view,
@@ -1747,7 +1741,7 @@ mod checked {
         })?;
         let has_public_transfer = if protocol_config.recompute_has_public_transfer_in_execution() {
             let abilities = vm.get_runtime().get_type_abilities(&type_).map_err(|e| {
-                convert_vm_error(
+                convert_vm_error::<_, E>(
                     e,
                     vm,
                     linkage_view,
@@ -1795,7 +1789,7 @@ mod checked {
     }
 
     /// Load an input object from the state_view
-    fn load_object(
+    fn load_object<E: ExecutionErrorTrait>(
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         state_view: &dyn ExecutionState,
@@ -1804,7 +1798,7 @@ mod checked {
         input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
         mutability_override: Option<Mutability>,
         id: ObjectID,
-    ) -> Result<InputValue, ExecutionError> {
+    ) -> Result<InputValue, E> {
         let Some(obj) = state_view.read_object(&id) else {
             // protected by transaction input checker
             invariant_violation!("Object {} does not exist yet", id);
@@ -1843,7 +1837,7 @@ mod checked {
                 .get_runtime()
                 .type_to_fully_annotated_layout(&obj_value.type_)
                 .map_err(|e| {
-                    convert_vm_error(
+                    convert_vm_error::<_, E>(
                         e,
                         vm,
                         linkage_view,
@@ -1871,7 +1865,7 @@ mod checked {
     }
 
     /// Load a CallArg, either an object or a raw set of BCS bytes
-    fn load_call_arg(
+    fn load_call_arg<E: ExecutionErrorTrait>(
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         state_view: &dyn ExecutionState,
@@ -1880,7 +1874,7 @@ mod checked {
         input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
         tx_context: &TxContext,
         call_arg: CallArg,
-    ) -> Result<InputValue, ExecutionError> {
+    ) -> Result<InputValue, E> {
         Ok(match call_arg {
             CallArg::Pure(bytes) => InputValue::new_raw(RawValueType::Any, bytes),
             CallArg::Object(obj_arg) => load_object_arg(
@@ -1901,7 +1895,7 @@ mod checked {
                 let withdrawal_ty = Withdrawal::type_tag(type_arg);
                 let ty =
                     load_type(vm, linkage_view, new_packages, &withdrawal_ty).map_err(|e| {
-                        convert_type_argument_error(
+                        convert_type_argument_error::<_, E>(
                             0,
                             e,
                             vm,
@@ -1910,7 +1904,7 @@ mod checked {
                         )
                     })?;
                 let abilities = vm.get_runtime().get_type_abilities(&ty).map_err(|e| {
-                    convert_vm_error(
+                    convert_vm_error::<_, E>(
                         e,
                         vm,
                         linkage_view,
@@ -2061,7 +2055,7 @@ mod checked {
         type_: Type,
         has_public_transfer: bool,
         contents: Vec<u8>,
-    ) -> Result<MoveObject, ExecutionError> {
+    ) -> Result<MoveObject, Mode::Error> {
         debug_assert_eq!(
             id,
             MoveObject::id_opt(&contents).expect("object contents should start with an id")
@@ -2071,7 +2065,7 @@ mod checked {
             .map(|obj: &LoadedRuntimeObject| obj.version);
 
         let type_tag = vm.get_runtime().get_type_tag(&type_).map_err(|e| {
-            convert_vm_error(
+            convert_vm_error::<_, Mode::Error>(
                 e,
                 vm,
                 linkage_view,
@@ -2091,7 +2085,7 @@ mod checked {
                 contents,
                 protocol_config,
                 Mode::packages_are_predefined(),
-            )
+            ).map_err(|e| e.into())
         }
     }
 
@@ -2132,12 +2126,12 @@ mod checked {
         }
     }
 
-    fn convert_vm_error<S: MoveResolver<Err = SuiError>>(
+    fn convert_vm_error<S: MoveResolver<Err = SuiError>, E: ExecutionErrorTrait>(
         error: VMError,
         vm: &MoveVM,
         state_view: &S,
         resolve_abort_location_to_package_id: bool,
-    ) -> ExecutionError {
+    ) -> E {
         crate::error::convert_vm_error_impl(
             error,
             &|id: &ModuleId| {
@@ -2157,13 +2151,13 @@ mod checked {
         )
     }
     /// Special case errors for type arguments to Move functions
-    fn convert_type_argument_error<S: MoveResolver<Err = SuiError>>(
+    fn convert_type_argument_error<S: MoveResolver<Err = SuiError>, E: ExecutionErrorTrait>(
         idx: usize,
         error: VMError,
         vm: &MoveVM,
         state_view: &S,
         resolve_abort_location_to_package_id: bool,
-    ) -> ExecutionError {
+    ) -> E {
         use sui_types::execution_status::TypeArgumentError;
         match error.major_status() {
             StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH => {

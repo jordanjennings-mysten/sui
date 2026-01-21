@@ -11,7 +11,7 @@ use sui_types::base_types::VersionDigest;
 use sui_types::committee::EpochId;
 use sui_types::deny_list_v2::check_coin_deny_list_v2_during_execution;
 use sui_types::effects::{AccumulatorWriteV1, TransactionEffects, TransactionEvents};
-use sui_types::error::ExecutionErrorKind;
+use sui_types::error::{ExecutionErrorKind, ExecutionErrorTrait};
 use sui_types::execution::{
     DynamicallyLoadedObjectMetadata, ExecutionResults, ExecutionResultsV2, SharedInput,
 };
@@ -779,7 +779,7 @@ impl TemporaryStore<'_> {
         }
     }
 
-    pub fn check_execution_results_consistency(&self) -> Result<(), ExecutionError> {
+    pub fn check_execution_results_consistency<E: ExecutionErrorTrait>(&self) -> Result<(), E> {
         assert_invariant!(
             self.execution_results
                 .created_object_ids
@@ -906,11 +906,11 @@ impl TemporaryStore<'_> {
     /// This function is intended to be called *after* we have charged for
     /// gas + applied the storage rebate to the gas object, but *before* we
     /// have updated object versions.
-    pub fn check_sui_conserved(
+    pub fn check_sui_conserved<E: ExecutionErrorTrait>(
         &self,
         simple_conservation_checks: bool,
         gas_summary: &GasCostSummary,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         if !simple_conservation_checks {
             return Ok(());
         }
@@ -944,7 +944,7 @@ impl TemporaryStore<'_> {
                     + gas_summary.storage_rebate
                     + gas_summary.non_refundable_storage_fee
             {
-                return Err(ExecutionError::invariant_violation(format!(
+                return Err(E::invariant_violation(format!(
                     "SUI conservation failed -- no storage charges in gas summary \
                         and total storage input rebate {} not equal  \
                         to total storage output rebate {}",
@@ -957,7 +957,7 @@ impl TemporaryStore<'_> {
             if total_input_rebate
                 != gas_summary.storage_rebate + gas_summary.non_refundable_storage_fee
             {
-                return Err(ExecutionError::invariant_violation(format!(
+                return Err(E::invariant_violation(format!(
                     "SUI conservation failed -- {} SUI in storage rebate field of input objects, \
                         {} SUI in tx storage rebate or tx non-refundable storage rebate",
                     total_input_rebate, gas_summary.non_refundable_storage_fee,
@@ -967,7 +967,7 @@ impl TemporaryStore<'_> {
             // all SUI charged for storage should flow into the storage rebate field
             // of some output object
             if gas_summary.storage_cost != total_output_rebate {
-                return Err(ExecutionError::invariant_violation(format!(
+                return Err(E::invariant_violation(format!(
                     "SUI conservation failed -- {} SUI charged for storage, \
                         {} SUI in storage rebate field of output objects",
                     gas_summary.storage_cost, total_output_rebate
@@ -989,12 +989,12 @@ impl TemporaryStore<'_> {
     /// storage rebate to the gas object, but *before* we have updated object versions. The
     /// advance epoch transaction would mint `epoch_fees` amount of SUI, and burn `epoch_rebates`
     /// amount of SUI. We need these information for this check.
-    pub fn check_sui_conserved_expensive(
+    pub fn check_sui_conserved_expensive<E: ExecutionErrorTrait>(
         &self,
         gas_summary: &GasCostSummary,
         advance_epoch_gas_summary: Option<(u64, u64)>,
         layout_resolver: &mut impl LayoutResolver,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         // total amount of SUI in input objects, including both coins and storage rebates
         let mut total_input_sui = 0;
         // total amount of SUI in output objects, including both coins and storage rebates
@@ -1037,7 +1037,7 @@ impl TemporaryStore<'_> {
             total_output_sui += epoch_rebates;
         }
         if total_input_sui != total_output_sui {
-            return Err(ExecutionError::invariant_violation(format!(
+            return Err(E::invariant_violation(format!(
                 "SUI conservation failed: input={}, output={}, \
                     this transaction either mints or burns SUI",
                 total_input_sui, total_output_sui,

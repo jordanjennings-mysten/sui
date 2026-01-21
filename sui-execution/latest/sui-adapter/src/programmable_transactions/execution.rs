@@ -78,6 +78,7 @@ mod checked {
         private_generics_verifier_v2,
     };
     use tracing::instrument;
+    use sui_types::error::{ExecutionErrorTrait};
 
     pub fn execute<Mode: ExecutionMode>(
         protocol_config: &ProtocolConfig,
@@ -90,7 +91,7 @@ mod checked {
         withdrawal_compatibility_inputs: Option<Vec<bool>>,
         pt: ProgrammableTransaction,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+    ) -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
         if protocol_config.enable_ptb_execution_v2() {
             return static_programmable_transactions::execute::<Mode>(
                 protocol_config,
@@ -139,9 +140,9 @@ mod checked {
         gas_charger: &mut GasCharger,
         pt: ProgrammableTransaction,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<Mode::ExecutionResults, ExecutionError> {
+    ) -> Result<Mode::ExecutionResults, Mode::Error> {
         let ProgrammableTransaction { inputs, commands } = pt;
-        let mut context = ExecutionContext::new(
+        let mut context = ExecutionContext::new::<Mode::Error>(
             protocol_config,
             metrics,
             vm,
@@ -201,7 +202,7 @@ mod checked {
         mode_results: &mut Mode::ExecutionResults,
         command: Command,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let mut argument_updates = Mode::empty_arguments();
 
         let kind = match &command {
@@ -221,11 +222,11 @@ mod checked {
                     );
                 };
 
-                let tag = to_type_tag(context, tag, 0)?;
+                let tag = to_type_tag::<Mode::Error>(context, tag, 0)?;
 
                 let elem_ty = context.load_type(&tag).map_err(|e| {
                     if context.protocol_config.convert_type_argument_error() {
-                        context.convert_type_argument_error(0, e)
+                        context.convert_type_argument_error::<Mode::Error>(0, e)
                     } else {
                         context.convert_vm_error(e)
                     }
@@ -256,10 +257,10 @@ mod checked {
                 let mut move_values = vec![];
                 let (mut used_in_non_entry_move_call, elem_ty) = match tag_opt {
                     Some(tag) => {
-                        let tag = to_type_tag(context, tag, 0)?;
+                        let tag = to_type_tag::<Mode::Error>(context, tag, 0)?;
                         let elem_ty = context.load_type(&tag).map_err(|e| {
                             if context.protocol_config.convert_type_argument_error() {
-                                context.convert_type_argument_error(0, e)
+                                context.convert_type_argument_error::<Mode::Error>(0, e)
                             } else {
                                 context.convert_vm_error(e)
                             }
@@ -335,7 +336,7 @@ mod checked {
 
                 for obj in objs {
                     obj.ensure_public_transfer_eligible()?;
-                    context.transfer_object(obj, addr)?;
+                    context.transfer_object::<Mode::Error>(obj, addr)?;
                 }
                 vec![]
             }
@@ -349,14 +350,14 @@ mod checked {
                         0,
                     );
                     let msg = "Expected a coin but got an non coin object".to_owned();
-                    return Err(ExecutionError::new_with_source(e, msg));
+                    return Err(Mode::Error::new_with_source(e, msg.into()));
                 };
                 let split_coins: Vec<Value> = amount_args
                     .into_iter()
                     .map(|amount_arg| {
                         let amount: u64 =
                             context.by_value_arg(CommandKind::SplitCoins, 1, amount_arg)?;
-                        let new_coin_id = context.fresh_id()?;
+                        let new_coin_id = context.fresh_id::<Mode::Error>()?;
                         let new_coin = coin.split(amount, new_coin_id)?;
                         let coin_type = obj.type_.clone();
                         // safe because we are propagating the coin type, and relying on the internal
@@ -364,7 +365,7 @@ mod checked {
                         let new_coin = unsafe { ObjectValue::coin(coin_type, new_coin) };
                         Ok(Value::Object(new_coin))
                     })
-                    .collect::<Result<_, ExecutionError>>()?;
+                    .collect::<Result<_, Mode::Error>>()?;
 
                 trace_utils::trace_split_coins(
                     context,
@@ -387,7 +388,7 @@ mod checked {
                         0,
                     );
                     let msg = "Expected a coin but got an non coin object".to_owned();
-                    return Err(ExecutionError::new_with_source(e, msg));
+                    return Err(Mode::Error::new_with_source(e, msg.into()));
                 };
                 let coins: Vec<ObjectValue> = coin_args
                     .into_iter()
@@ -402,7 +403,7 @@ mod checked {
                             (idx + 1) as u16,
                         );
                         let msg = "Coins do not have the same type".to_owned();
-                        return Err(ExecutionError::new_with_source(e, msg));
+                        return Err(Mode::Error::new_with_source(e, msg.into()));
                     }
                     let ObjectContents::Coin(Coin { id, balance }) = coin.contents else {
                         invariant_violation!(
@@ -453,14 +454,14 @@ mod checked {
                 // Convert type arguments to `Type`s
                 let mut loaded_type_arguments = Vec::with_capacity(type_arguments.len());
                 for (ix, type_arg) in type_arguments.into_iter().enumerate() {
-                    let type_arg = to_type_tag(context, type_arg, ix)?;
+                    let type_arg = to_type_tag::<Mode::Error>(context, type_arg, ix)?;
                     let ty = context
                         .load_type(&type_arg)
-                        .map_err(|e| context.convert_type_argument_error(ix, e))?;
+                        .map_err(|e| context.convert_type_argument_error::<Mode::Error>(ix, e))?;
                     loaded_type_arguments.push(ty);
                 }
 
-                let original_address = context.set_link_context(package)?;
+                let original_address = context.set_link_context::<Mode::Error>(package)?;
                 let storage_id = ModuleId::new(*package, module.clone());
                 let runtime_id = ModuleId::new(original_address, module);
                 let return_values = execute_move_call::<Mode>(
@@ -506,7 +507,7 @@ mod checked {
         };
 
         Mode::finish_command(context, mode_results, argument_updates, &results)?;
-        context.push_command_results(kind, results)?;
+        context.push_command_results::<Mode::Error>(kind, results)?;
         Ok(())
     }
 
@@ -521,7 +522,7 @@ mod checked {
         arguments: Vec<Arg>,
         is_init: bool,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<Vec<Value>, ExecutionError> {
+    ) -> Result<Vec<Value>, Mode::Error> {
         // check that the function is either an entry function or a valid public function
         let LoadedFunctionInfo {
             kind,
@@ -543,7 +544,7 @@ mod checked {
         let SerializedReturnValues {
             mutable_reference_outputs,
             return_values,
-        } = vm_move_call(
+        } = vm_move_call::<Mode::Error>(
             context,
             runtime_id,
             function,
@@ -558,9 +559,9 @@ mod checked {
         );
 
         if context.protocol_config.relocate_event_module() {
-            context.take_user_events(storage_id, index, last_instr)?;
+            context.take_user_events::<Mode::Error>(storage_id, index, last_instr)?;
         } else {
-            context.take_user_events(runtime_id, index, last_instr)?;
+            context.take_user_events::<Mode::Error>(runtime_id, index, last_instr)?;
         }
 
         // save the link context because calls to `make_value` below can set new ones, and we don't want
@@ -595,11 +596,11 @@ mod checked {
         mut_ref_kinds: impl IntoIterator<Item = (u8, ValueKind)>,
         return_values: impl IntoIterator<Item = Vec<u8>>,
         return_value_kinds: impl IntoIterator<Item = ValueKind>,
-    ) -> Result<Vec<Value>, ExecutionError> {
+    ) -> Result<Vec<Value>, Mode::Error> {
         for ((i, bytes), (j, kind)) in mut_ref_values.into_iter().zip(mut_ref_kinds) {
             assert_invariant!(i == j, "lost mutable input");
             let arg_idx = i as usize;
-            let value = make_value(context, kind, bytes, non_entry_move_call)?;
+            let value = make_value::<Mode::Error>(context, kind, bytes, non_entry_move_call)?;
             context.restore_arg::<Mode>(argument_updates, arguments[arg_idx], value)?;
         }
 
@@ -615,12 +616,12 @@ mod checked {
             .collect()
     }
 
-    fn make_value(
+    fn make_value<E: ExecutionErrorTrait>(
         context: &mut ExecutionContext<'_, '_, '_>,
         value_info: ValueKind,
         bytes: Vec<u8>,
         used_in_non_entry_move_call: bool,
-    ) -> Result<Value, ExecutionError> {
+    ) -> Result<Value, E> {
         Ok(match value_info {
             ValueKind::Object {
                 type_,
@@ -650,7 +651,7 @@ mod checked {
         module_bytes: Vec<Vec<u8>>,
         dep_ids: Vec<ObjectID>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<Vec<Value>, ExecutionError> {
+    ) -> Result<Vec<Value>, Mode::Error> {
         assert_invariant!(
             !module_bytes.is_empty(),
             "empty package is checked in transaction input checker"
@@ -659,7 +660,7 @@ mod checked {
             .gas_charger
             .charge_publish_package(module_bytes.iter().map(|v| v.len()).sum())?;
 
-        let mut modules = context.deserialize_modules(&module_bytes)?;
+        let mut modules = context.deserialize_modules::<Mode::Error>(&module_bytes)?;
 
         // It should be fine that this does not go through ExecutionContext::fresh_id since the Move
         // runtime does not to know about new packages created, since Move objects and Move packages
@@ -675,9 +676,9 @@ mod checked {
 
         // For newly published packages, runtime ID matches storage ID.
         let storage_id = runtime_id;
-        let dependencies = fetch_packages(&context.state_view, &dep_ids)?;
+        let dependencies = fetch_packages::<Mode::Error>(&context.state_view, &dep_ids)?;
         let package =
-            context.new_package(&modules, dependencies.iter().map(|p| p.move_package()))?;
+            context.new_package::<Mode::Error>(&modules, dependencies.iter().map(|p| p.move_package()))?;
 
         // Here we optimistically push the package that is being published/upgraded
         // and if there is an error of any kind (verification or module init) we
@@ -699,7 +700,7 @@ mod checked {
             // no upgrade cap for genesis modules
             vec![]
         } else {
-            let cap = &UpgradeCap::new(context.fresh_id()?, storage_id);
+            let cap = &UpgradeCap::new(context.fresh_id::<Mode::Error>()?, storage_id);
             vec![Value::Object(context.make_object_value(
                 UpgradeCap::type_().into(),
                 /* has_public_transfer */ true,
@@ -717,7 +718,7 @@ mod checked {
         dep_ids: Vec<ObjectID>,
         current_package_id: ObjectID,
         upgrade_ticket_arg: Arg,
-    ) -> Result<Vec<Value>, ExecutionError> {
+    ) -> Result<Vec<Value>, Mode::Error> {
         assert_invariant!(
             !module_bytes.is_empty(),
             "empty package is checked in transaction input checker"
@@ -728,10 +729,10 @@ mod checked {
 
         let upgrade_ticket_type = context
             .load_type_from_struct(&UpgradeTicket::type_())
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
         let upgrade_receipt_type = context
             .load_type_from_struct(&UpgradeReceipt::type_())
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
 
         let upgrade_ticket: UpgradeTicket = {
             let mut ticket_bytes = Vec::new();
@@ -743,7 +744,7 @@ mod checked {
             ticket_val
                 .write_bcs_bytes(&mut ticket_bytes, bound.map(|b| context.size_bound_raw(b)))?;
             bcs::from_bytes(&ticket_bytes).map_err(|_| {
-                ExecutionError::from_kind(ExecutionErrorKind::CommandArgumentError {
+                Mode::Error::from_kind(ExecutionErrorKind::CommandArgumentError {
                     arg_idx: 0,
                     kind: CommandArgumentError::InvalidBCSBytes,
                 })
@@ -752,7 +753,7 @@ mod checked {
 
         // Make sure the passed-in package ID matches the package ID in the `upgrade_ticket`.
         if current_package_id != upgrade_ticket.package.bytes {
-            return Err(ExecutionError::from_kind(
+            return Err(Mode::Error::from_kind(
                 ExecutionErrorKind::PackageUpgradeError {
                     upgrade_error: PackageUpgradeError::PackageIDDoesNotMatch {
                         package_id: current_package_id,
@@ -768,7 +769,7 @@ mod checked {
             MovePackage::compute_digest_for_modules_and_deps(&module_bytes, &dep_ids, hash_modules)
                 .to_vec();
         if computed_digest != upgrade_ticket.digest {
-            return Err(ExecutionError::from_kind(
+            return Err(Mode::Error::from_kind(
                 ExecutionErrorKind::PackageUpgradeError {
                     upgrade_error: PackageUpgradeError::DigestDoesNotMatch {
                         digest: computed_digest,
@@ -778,17 +779,17 @@ mod checked {
         }
 
         // Check that this package ID points to a package and get the package we're upgrading.
-        let current_package = fetch_package(&context.state_view, &upgrade_ticket.package.bytes)?;
+        let current_package = fetch_package::<Mode::Error>(&context.state_view, &upgrade_ticket.package.bytes)?;
 
-        let mut modules = context.deserialize_modules(&module_bytes)?;
+        let mut modules = context.deserialize_modules::<Mode::Error>(&module_bytes)?;
         let runtime_id = current_package.move_package().original_package_id();
         substitute_package_id(&mut modules, runtime_id)?;
 
         // Upgraded packages share their predecessor's runtime ID but get a new storage ID.
         let storage_id = context.tx_context.borrow_mut().fresh_id();
 
-        let dependencies = fetch_packages(&context.state_view, &dep_ids)?;
-        let package = context.upgrade_package(
+        let dependencies = fetch_packages::<Mode::Error>(&context.state_view, &dep_ids)?;
+        let package = context.upgrade_package::<Mode::Error>(
             storage_id,
             current_package.move_package(),
             &modules,
@@ -796,7 +797,7 @@ mod checked {
         )?;
 
         context.linkage_view.set_linkage(&package)?;
-        let res = publish_and_verify_modules(context, runtime_id, &modules);
+        let res = publish_and_verify_modules::<Mode::Error>(context, runtime_id, &modules);
         context.linkage_view.reset_linkage()?;
         res?;
 
@@ -840,9 +841,9 @@ mod checked {
             });
             if new_module_has_init {
                 // TODO we cannot run 'init' on upgrade yet due to global type cache limitations
-                return Err(ExecutionError::new_with_source(
+                return Err(Mode::Error::new_with_source(
                     ExecutionErrorKind::FeatureNotYetSupported,
-                    "`init` in new modules on upgrade is not yet supported",
+                    "`init` in new modules on upgrade is not yet supported".into(),
                 ));
             }
         }
@@ -946,11 +947,11 @@ mod checked {
         })
     }
 
-    pub fn fetch_package(
+    pub fn fetch_package<E: ExecutionErrorTrait>(
         state_view: &impl BackingPackageStore,
         package_id: &ObjectID,
-    ) -> Result<PackageObject, ExecutionError> {
-        let mut fetched_packages = fetch_packages(state_view, vec![package_id])?;
+    ) -> Result<PackageObject, E> {
+        let mut fetched_packages = fetch_packages::<E>(state_view, vec![package_id])?;
         assert_invariant!(
             fetched_packages.len() == 1,
             "Number of fetched packages must match the number of package object IDs if successful."
@@ -963,15 +964,15 @@ mod checked {
         }
     }
 
-    pub fn fetch_packages<'ctx, 'state>(
+    pub fn fetch_packages<'ctx, 'state, E: ExecutionErrorTrait>(
         state_view: &'state impl BackingPackageStore,
         package_ids: impl IntoIterator<Item = &'ctx ObjectID>,
-    ) -> Result<Vec<PackageObject>, ExecutionError> {
+    ) -> Result<Vec<PackageObject>, E> {
         let package_ids: BTreeSet<_> = package_ids.into_iter().collect();
         match get_package_objects(state_view, package_ids) {
-            Err(e) => Err(ExecutionError::new_with_source(
+            Err(e) => Err(E::new_with_source(
                 ExecutionErrorKind::PublishUpgradeMissingDependency,
-                e,
+                e.into(),
             )),
             Ok(Err(missing_deps)) => {
                 let msg = format!(
@@ -982,9 +983,9 @@ mod checked {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                Err(ExecutionError::new_with_source(
+                Err(E::new_with_source(
                     ExecutionErrorKind::PublishUpgradeMissingDependency,
-                    msg,
+                    msg.into(),
                 ))
             }
             Ok(Ok(pkgs)) => Ok(pkgs),
@@ -995,7 +996,7 @@ mod checked {
      * Move execution
      **************************************************************************************************/
 
-    fn vm_move_call(
+    fn vm_move_call<E: ExecutionErrorTrait>(
         context: &mut ExecutionContext<'_, '_, '_>,
         module_id: &ModuleId,
         function: &IdentStr,
@@ -1003,7 +1004,7 @@ mod checked {
         tx_context_kind: TxContextKind,
         mut serialized_arguments: Vec<Vec<u8>>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<SerializedReturnValues, ExecutionError> {
+    ) -> Result<SerializedReturnValues, E> {
         match tx_context_kind {
             TxContextKind::None => (),
             TxContextKind::Mutable | TxContextKind::Immutable => {
@@ -1019,7 +1020,7 @@ mod checked {
                 serialized_arguments,
                 trace_builder_opt,
             )
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<E>(e))?;
 
         // When this function is used during publishing, it
         // may be executed several times, with objects being
@@ -1033,7 +1034,7 @@ mod checked {
                 invariant_violation!("Missing TxContext in reference outputs");
             };
             let updated_ctx: MoveLegacyTxContext = bcs::from_bytes(&ctx_bytes).map_err(|e| {
-                ExecutionError::invariant_violation(format!(
+                E::invariant_violation(format!(
                     "Unable to deserialize TxContext bytes. {e}"
                 ))
             })?;
@@ -1042,11 +1043,11 @@ mod checked {
         Ok(result)
     }
 
-    fn publish_and_verify_modules(
+    fn publish_and_verify_modules<E: ExecutionErrorTrait>(
         context: &mut ExecutionContext<'_, '_, '_>,
         package_id: ObjectID,
         modules: &[CompiledModule],
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         // TODO(https://github.com/MystenLabs/sui/issues/69): avoid this redundant serialization by exposing VM API that allows us to run the linker directly on `Vec<CompiledModule>`
         let binary_version = context.protocol_config.move_binary_format_version();
         let new_module_bytes: Vec<_> = modules
@@ -1064,7 +1065,7 @@ mod checked {
             .collect();
         context
             .publish_module_bundle(new_module_bytes, AccountAddress::from(package_id))
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<E>(e))?;
 
         // run the Sui verifier
         for module in modules {
@@ -1087,7 +1088,7 @@ mod checked {
         argument_updates: &mut Mode::ArgumentUpdates,
         modules: impl IntoIterator<Item = &'a CompiledModule>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let modules_to_init = modules.into_iter().filter_map(|module| {
             for fdef in &module.function_defs {
                 let fhandle = module.function_handle_at(fdef.function);
@@ -1172,7 +1173,7 @@ mod checked {
         function: &IdentStr,
         type_arguments: &[Type],
         from_init: bool,
-    ) -> Result<LoadedFunctionInfo, ExecutionError> {
+    ) -> Result<LoadedFunctionInfo, Mode::Error> {
         if from_init {
             let result = context.load_function(module_id, function, type_arguments);
             assert_invariant!(
@@ -1186,7 +1187,7 @@ mod checked {
             .vm
             .get_runtime()
             .load_module(module_id, &data_store)
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
         let Some((index, fdef)) = module
             .function_defs
             .iter()
@@ -1195,20 +1196,20 @@ mod checked {
                 module.identifier_at(module.function_handle_at(fdef.function).name) == function
             })
         else {
-            return Err(ExecutionError::new_with_source(
+            return Err(Mode::Error::new_with_source(
                 ExecutionErrorKind::FunctionNotFound,
                 format!(
                     "Could not resolve function '{}' in module {}",
                     function, &module_id,
-                ),
+                ).into(),
             ));
         };
 
         // entry on init is now banned, so ban invoking it
         if !from_init && function == INIT_FN_NAME && context.protocol_config.ban_entry_init() {
-            return Err(ExecutionError::new_with_source(
+            return Err(Mode::Error::new_with_source(
                 ExecutionErrorKind::NonEntryFunctionInvoked,
-                "Cannot call 'init'",
+                "Cannot call 'init'".into(),
             ));
         }
 
@@ -1234,17 +1235,17 @@ mod checked {
                 FunctionKind::NonEntry
             }
             (Visibility::Private | Visibility::Friend, false) => {
-                return Err(ExecutionError::new_with_source(
+                return Err(Mode::Error::new_with_source(
                     ExecutionErrorKind::NonEntryFunctionInvoked,
-                    "Can only call `entry` or `public` functions",
+                    "Can only call `entry` or `public` functions".into(),
                 ));
             }
         };
         let signature = context
             .load_function(module_id, function, type_arguments)
-            .map_err(|e| context.convert_vm_error(e))?;
+            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
         let signature =
-            subst_signature(signature, type_arguments).map_err(|e| context.convert_vm_error(e))?;
+            subst_signature(signature, type_arguments).map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
         let return_value_kinds = match function_kind {
             FunctionKind::Init => {
                 assert_invariant!(
@@ -1260,7 +1261,7 @@ mod checked {
         if context.protocol_config.private_generics_verifier_v2() {
             check_private_generics_v2(module_id, function)?;
         } else {
-            check_private_generics(module_id, function)?;
+            check_private_generics::<Mode>(module_id, function)?;
         }
         Ok(LoadedFunctionInfo {
             kind: function_kind,
@@ -1307,7 +1308,7 @@ mod checked {
         _module_id: &ModuleId,
         _function: &IdentStr,
         signature: &LoadedFunctionInstantiation,
-    ) -> Result<Vec<ValueKind>, ExecutionError> {
+    ) -> Result<Vec<ValueKind>, Mode::Error> {
         signature
             .return_
             .iter()
@@ -1321,7 +1322,7 @@ mod checked {
                         inner
                     }
                     Type::Reference(_) | Type::MutableReference(_) => {
-                        return Err(ExecutionError::from_kind(
+                        return Err(Mode::Error::from_kind(
                             ExecutionErrorKind::InvalidPublicFunctionReturnType { idx: idx as u16 },
                         ));
                     }
@@ -1338,7 +1339,7 @@ mod checked {
                             .vm
                             .get_runtime()
                             .get_type_tag(return_type)
-                            .map_err(|e| context.convert_vm_error(e))?;
+                            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
                         let TypeTag::Struct(struct_tag) = type_tag else {
                             invariant_violation!("Struct type make a non struct type tag")
                         };
@@ -1364,15 +1365,15 @@ mod checked {
             .collect()
     }
 
-    pub fn check_private_generics(
+    pub fn check_private_generics<Mode: ExecutionMode>(
         module_id: &ModuleId,
         function: &IdentStr,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         let module_ident = (module_id.address(), module_id.name());
         if module_ident == (&SUI_FRAMEWORK_ADDRESS, EVENT_MODULE) {
-            return Err(ExecutionError::new_with_source(
+            return Err(Mode::Error::new_with_source(
                 ExecutionErrorKind::NonEntryFunctionInvoked,
-                format!("Cannot directly call functions in sui::{}", EVENT_MODULE),
+                format!("Cannot directly call functions in sui::{}", EVENT_MODULE).into(),
             ));
         }
 
@@ -1385,9 +1386,9 @@ mod checked {
                 m = TRANSFER_MODULE,
                 f = function
             );
-            return Err(ExecutionError::new_with_source(
+            return Err(Mode::Error::new_with_source(
                 ExecutionErrorKind::NonEntryFunctionInvoked,
-                msg,
+                msg.into(),
             ));
         }
 
@@ -1451,7 +1452,7 @@ mod checked {
         function_kind: FunctionKind,
         signature: &LoadedFunctionInstantiation,
         args: &[Arg],
-    ) -> Result<ArgInfo, ExecutionError> {
+    ) -> Result<ArgInfo, Mode::Error> {
         // check the arity
         let parameters = &signature.parameters;
         let tx_ctx_kind = match parameters.last() {
@@ -1465,7 +1466,7 @@ mod checked {
         let has_tx_context = tx_ctx_kind != TxContextKind::None;
         let num_args = args.len() + (has_one_time_witness as usize) + (has_tx_context as usize);
         if num_args != parameters.len() {
-            return Err(ExecutionError::new_with_source(
+            return Err(Mode::Error::new_with_source(
                 ExecutionErrorKind::ArityMismatch,
                 format!(
                     "Expected {:?} argument{} calling function '{}', but found {:?}",
@@ -1473,7 +1474,7 @@ mod checked {
                     if parameters.len() == 1 { "" } else { "s" },
                     function,
                     num_args
-                ),
+                ).into(),
             ));
         }
 
@@ -1503,7 +1504,7 @@ mod checked {
                             .vm
                             .get_runtime()
                             .get_type_tag(type_)
-                            .map_err(|e| context.convert_vm_error(e))?;
+                            .map_err(|e| context.convert_vm_error::<Mode::Error>(e))?;
                         let TypeTag::Struct(struct_tag) = type_tag else {
                             invariant_violation!("Struct type make a non struct type tag")
                         };
@@ -1530,7 +1531,7 @@ mod checked {
                 FunctionKind::PrivateEntry | FunctionKind::Init
             ) && value.was_used_in_non_entry_move_call()
             {
-                return Err(command_argument_error(
+                return Err(Mode::Error::command_argument_error(
                     CommandArgumentError::InvalidArgumentToPrivateEntryFunction,
                     idx,
                 ));
@@ -1666,11 +1667,11 @@ mod checked {
     // machinery. With the new linkage resolution that we will be adding this will
     // be much cleaner however, we'll hold off on adding that in here, and instead add it in the
     // new execution code.
-    fn to_type_tag(
+    fn to_type_tag<E: ExecutionErrorTrait>(
         context: &mut ExecutionContext<'_, '_, '_>,
         type_input: TypeInput,
         idx: usize,
-    ) -> Result<TypeTag, ExecutionError> {
+    ) -> Result<TypeTag, E> {
         let type_tag_no_def_ids = to_type_tag_(context, type_input, idx)?;
         if context
             .protocol_config
@@ -1687,8 +1688,8 @@ mod checked {
 
             let ty = context
                 .load_type(&type_tag_no_def_ids)
-                .map_err(|e| context.convert_type_argument_error(ix, e))?;
-            context.get_type_tag(&ty)
+                .map_err(|e| context.convert_type_argument_error::<E>(ix, e))?;
+            context.get_type_tag(&ty).map_err(|e| e.into())
         } else {
             Ok(type_tag_no_def_ids)
         }
@@ -1764,13 +1765,14 @@ mod checked {
         let module_ident = to_ident(module.clone())?;
         let name_ident = to_ident(name.clone())?;
 
+        let key = (module, name);
         if better_resolution_errors
             && context
                 .linkage_view
                 .get_package(&addr.into())
                 .ok()
                 .flatten()
-                .is_none_or(|pkg| !pkg.type_origin_map().contains_key(&(module, name)))
+                .is_none_or(|pkg| !pkg.type_origin_map().contains_key(&key))
         {
             return Err(ExecutionError::from_kind(
                 ExecutionErrorKind::TypeArgumentError {

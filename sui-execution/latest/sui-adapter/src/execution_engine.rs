@@ -59,7 +59,7 @@ mod checked {
         ChainIdentifier, get_mainnet_chain_identifier, get_testnet_chain_identifier,
     };
     use sui_types::effects::TransactionEffects;
-    use sui_types::error::{ExecutionError, ExecutionErrorKind};
+    use sui_types::error::{ExecutionError, ExecutionErrorKind, ExecutionErrorTrait};
     use sui_types::execution::{ExecutionTiming, ResultWithTimings};
     use sui_types::execution_status::ExecutionStatus;
     use sui_types::gas::GasCostSummary;
@@ -107,7 +107,7 @@ mod checked {
         SuiGasStatus,
         TransactionEffects,
         Vec<ExecutionTiming>,
-        Result<Mode::ExecutionResults, ExecutionError>,
+        Result<Mode::ExecutionResults, Mode::Error>,
     ) {
         let input_objects = input_objects.into_inner();
         let mutable_inputs = if enable_expensive_checks {
@@ -182,6 +182,10 @@ mod checked {
             execution_params,
             trace_builder_opt,
         );
+
+        use sui_types::error::ExecutionErrorTrait;
+        use std::error::Error;
+
 
         let status = if let Err(error) = &execution_result {
             // Elaborate errors in logs if they are unexpected or their status is terse.
@@ -331,7 +335,7 @@ mod checked {
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> (
         GasCostSummary,
-        Result<Mode::ExecutionResults, ExecutionError>,
+        Result<Mode::ExecutionResults, Mode::Error>,
         Vec<ExecutionTiming>,
     ) {
         gas_charger.smash_gas(temporary_store);
@@ -350,16 +354,17 @@ mod checked {
         // we must still ensure an effect is committed and all objects versions incremented
         let result = gas_charger.charge_input_objects(temporary_store);
 
-        let result: ResultWithTimings<Mode::ExecutionResults, ExecutionError> =
-            result.map_err(|e| (e, vec![])).and_then(
-                |()| -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+        let result: ResultWithTimings<Mode::ExecutionResults, Mode::Error> =
+            result.map_err(|e: Mode::Error| (e.into(), vec![])).and_then(
+                |()| -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
                     let mut execution_result: ResultWithTimings<
                         Mode::ExecutionResults,
-                        ExecutionError,
+                        Mode::Error,
                     > = match execution_params {
-                        ExecutionOrEarlyError::Err(early_execution_error) => {
-                            Err((ExecutionError::new(early_execution_error, None), vec![]))
-                        }
+                        ExecutionOrEarlyError::Err(early_execution_error) => Err((
+                            early_execution_error.into(),
+                            vec![],
+                        )),
                         ExecutionOrEarlyError::Ok(()) => execution_loop::<Mode>(
                             store,
                             temporary_store,
@@ -373,14 +378,14 @@ mod checked {
                         ),
                     };
 
-                    let meter_check = check_meter_limit(
+                    let meter_check = check_meter_limit::<Mode::Error>(
                         temporary_store,
                         gas_charger,
                         protocol_config,
                         metrics.clone(),
                     );
                     if let Err(e) = meter_check {
-                        execution_result = Err((e, vec![]));
+                        execution_result = Err((e.into(), vec![]));
                     }
 
                     if execution_result.is_ok() {
@@ -391,7 +396,7 @@ mod checked {
                             metrics,
                         );
                         if let Err(e) = gas_check {
-                            execution_result = Err((e, vec![]));
+                            execution_result = Err((e.into(), vec![]));
                         }
                     }
 
@@ -426,7 +431,7 @@ mod checked {
             advance_epoch_gas_summary,
         ) {
             // FIXME: we cannot fail the transaction if this is an epoch change transaction.
-            result = Err(e);
+            result = Err(e.into());
         }
 
         (cost_summary, result, timings)
@@ -443,8 +448,8 @@ mod checked {
         cost_summary: &GasCostSummary,
         is_genesis_tx: bool,
         advance_epoch_gas_summary: Option<(u64, u64)>,
-    ) -> Result<(), ExecutionError> {
-        let mut result: std::result::Result<(), sui_types::error::ExecutionError> = Ok(());
+    ) -> Result<(), Mode::Error> {
+        let mut result: std::result::Result<(), Mode::Error> = Ok(());
         if !is_genesis_tx && !Mode::skip_conservation_checks() {
             // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
             let conservation_result = {
@@ -474,7 +479,7 @@ mod checked {
                 // check conservation once more
                 if let Err(recovery_err) = {
                     temporary_store
-                        .check_sui_conserved(simple_conservation_checks, cost_summary)
+                        .check_sui_conserved::<Mode::Error>(simple_conservation_checks, cost_summary)
                         .and_then(|()| {
                             if enable_expensive_checks {
                                 // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
@@ -507,12 +512,12 @@ mod checked {
     }
 
     #[instrument(name = "check_meter_limit", level = "debug", skip_all)]
-    fn check_meter_limit(
+    fn check_meter_limit<E: ExecutionErrorTrait>(
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         let effects_estimated_size = temporary_store.estimate_effects_size_upperbound();
 
         // Check if a limit threshold was crossed.
@@ -534,12 +539,12 @@ mod checked {
                 );
                 Ok(())
             }
-            LimitThresholdCrossed::Hard(_, lim) => Err(ExecutionError::new_with_source(
+            LimitThresholdCrossed::Hard(_, lim) => Err(E::new_with_source(
                 ExecutionErrorKind::EffectsTooLarge {
                     current_size: effects_estimated_size as u64,
                     max_size: lim as u64,
                 },
-                "Transaction effects are too large",
+                "Transaction effects are too large".into(),
             )),
         }
     }
@@ -550,7 +555,7 @@ mod checked {
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), Mode::Error> {
         if let (Some(normal_lim), Some(system_lim)) = (
             protocol_config.max_size_written_objects_as_option(),
             protocol_config.max_size_written_objects_system_tx_as_option(),
@@ -573,12 +578,12 @@ mod checked {
                     )
                 }
                 LimitThresholdCrossed::Hard(_, lim) => {
-                    return Err(ExecutionError::new_with_source(
+                    return Err(Mode::Error::new_with_source(
                         ExecutionErrorKind::WrittenObjectsTooLarge {
                             current_size: written_objects_size as u64,
                             max_size: lim as u64,
                         },
-                        "Written objects size crossed hard limit",
+                        "Written objects size crossed hard limit".into(),
                     ));
                 }
             };
@@ -598,7 +603,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+    ) -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
         let result = match transaction_kind {
             TransactionKind::ChangeEpoch(change_epoch) => {
                 let builder = ProgrammableTransactionBuilder::new();
@@ -614,7 +619,7 @@ mod checked {
                     metrics,
                     trace_builder_opt,
                 )
-                .map_err(|e| (e, vec![]))?;
+                .map_err(|e: Mode::Error| (e.into(), vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::Genesis(GenesisTransaction { objects }) => {
@@ -723,7 +728,7 @@ mod checked {
                     None,
                     pt,
                     trace_builder_opt,
-                )?;
+                ).map_err(|(e, vec)| (e.into(), vec))?;
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::EndOfEpochTransaction(txns) => {
@@ -745,7 +750,7 @@ mod checked {
                                 metrics,
                                 trace_builder_opt,
                             )
-                            .map_err(|e| (e, vec![]))?;
+                            .map_err(|e: Mode::Error| (e.into(), vec![]))?;
                             return Ok((Mode::empty_results(), vec![]));
                         }
                         EndOfEpochTransactionKind::AuthenticatorStateCreate => {
@@ -851,7 +856,7 @@ mod checked {
                 .map_err(|e| (e, vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
             }
-        }?;
+        }.map_err(|e| (e.0.into(), e.1))?;
         temporary_store
             .check_execution_results_consistency()
             .map_err(|e| (e, vec![]))?;
@@ -892,10 +897,10 @@ mod checked {
         (storage_rewards, computation_rewards)
     }
 
-    pub fn construct_advance_epoch_pt(
+    pub fn construct_advance_epoch_pt<E: ExecutionErrorTrait>(
         mut builder: ProgrammableTransactionBuilder,
         params: &AdvanceEpochParams,
-    ) -> Result<ProgrammableTransaction, ExecutionError> {
+    ) -> Result<ProgrammableTransaction, E> {
         // Step 1: Create storage and computation rewards.
         let (storage_rewards, computation_rewards) = mint_epoch_rewards_in_pt(&mut builder, params);
 
@@ -993,7 +998,7 @@ mod checked {
         Ok(builder.finish())
     }
 
-    fn advance_epoch(
+    fn advance_epoch<E: ExecutionErrorTrait>(
         builder: ProgrammableTransactionBuilder,
         change_epoch: ChangeEpoch,
         temporary_store: &mut TemporaryStore<'_>,
@@ -1004,7 +1009,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         let params = AdvanceEpochParams {
             epoch: change_epoch.epoch,
             next_protocol_version: change_epoch.protocol_version,
@@ -1016,7 +1021,7 @@ mod checked {
             reward_slashing_rate: protocol_config.reward_slashing_rate(),
             epoch_start_timestamp_ms: change_epoch.epoch_start_timestamp_ms,
         };
-        let advance_epoch_pt = construct_advance_epoch_pt(builder, &params)?;
+        let advance_epoch_pt = construct_advance_epoch_pt::<E>(builder, &params)?;
         let result = programmable_transactions::execution::execute::<execution_mode::System>(
             protocol_config,
             metrics.clone(),
@@ -1072,7 +1077,7 @@ mod checked {
                 protocol_config,
             )
             .expect("Failed to create new MoveVM");
-            process_system_packages(
+            process_system_packages::<E>(
                 change_epoch,
                 temporary_store,
                 store,
@@ -1084,7 +1089,7 @@ mod checked {
                 trace_builder_opt,
             );
         } else {
-            process_system_packages(
+            process_system_packages::<E>(
                 change_epoch,
                 temporary_store,
                 store,
@@ -1099,7 +1104,7 @@ mod checked {
         Ok(())
     }
 
-    fn process_system_packages(
+    fn process_system_packages<E: ExecutionErrorTrait>(
         change_epoch: ChangeEpoch,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
@@ -1317,7 +1322,7 @@ mod checked {
         builder
     }
 
-    fn setup_authenticator_state_update(
+    fn setup_authenticator_state_update<E: ExecutionErrorTrait>(
         update: AuthenticatorStateUpdate,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
@@ -1327,7 +1332,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
             let res = builder.move_call(
@@ -1389,7 +1394,7 @@ mod checked {
         builder
     }
 
-    fn setup_randomness_state_update(
+    fn setup_randomness_state_update<E: ExecutionErrorTrait>(
         update: RandomnessStateUpdate,
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
@@ -1399,7 +1404,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         metrics: Arc<LimitsMetrics>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), E> {
         let pt = {
             let mut builder = ProgrammableTransactionBuilder::new();
             let res = builder.move_call(

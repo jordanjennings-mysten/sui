@@ -38,6 +38,7 @@ use sui_verifier_v1::meter::SuiVerifierMeter;
 use crate::executor;
 use crate::verifier;
 use sui_adapter_v1::execution_mode;
+use sui_types::error::ExecutionErrorWithContext;
 
 pub(crate) struct Executor(Arc<MoveVM>);
 
@@ -105,6 +106,51 @@ impl executor::Executor for Executor {
             );
         // note: old versions do not report timings.
         (inner_temp_store, gas_status, effects, vec![], result)
+    }
+
+    fn execute_transaction_to_effects2(
+        &self,
+        store: &dyn BackingStore,
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        execution_params: ExecutionOrEarlyError,
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        input_objects: CheckedInputObjects,
+        gas: GasData,
+        gas_status: SuiGasStatus,
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        _trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Vec<ExecutionTiming>,
+        Result<(), ExecutionErrorWithContext>,
+    ) {
+        let gas_coins = gas.payment;
+        let (inner_temp_store, gas_status, effects, result) =
+            execute_transaction_to_effects::<execution_mode::Normal>(
+                store,
+                input_objects,
+                gas_coins,
+                gas_status,
+                transaction_kind,
+                transaction_signer,
+                transaction_digest,
+                &self.0,
+                epoch_id,
+                epoch_timestamp_ms,
+                protocol_config,
+                metrics,
+                enable_expensive_checks,
+                execution_params,
+            );
+        // note: old versions do not report timings.
+        (inner_temp_store, gas_status, effects, vec![], result.map_err(|e|e.into()))
     }
 
     fn dev_inspect_transaction(
