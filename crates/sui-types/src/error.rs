@@ -11,6 +11,7 @@ use crate::{
     object::Owner,
 };
 
+use move_binary_format::errors::VMError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt::Debug};
@@ -1206,5 +1207,56 @@ impl ErrorCategory {
                 | ErrorCategory::ValidatorOverloaded
                 | ErrorCategory::Unavailable
         )
+    }
+}
+
+impl std::fmt::Display for ErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::fmt::Debug for ErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Error Context: {} {:?}", self.message, self.properties)
+    }
+}
+
+impl std::error::Error for ErrorContext {}
+
+pub struct ErrorContext {
+    pub message: String,
+    pub properties: BTreeMap<String, String>,
+}
+
+impl ErrorContext {
+    pub fn new() -> Self {
+        Self {
+            message: "".to_string(),
+            properties: BTreeMap::new(),
+        }
+    }
+
+    pub fn from_message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            properties: BTreeMap::new(),
+        }
+    }
+
+    pub fn from_vm_error(vm_error: &VMError) -> Self {
+        Self::from_message(vm_error.to_string()).with_vm_error_properties(vm_error)
+    }
+
+    pub fn with_vm_error_properties(mut self, vm_error: &VMError) -> Self {
+        self.properties.insert(
+            "vm_status_code".to_string(),
+            format!("{:?}", vm_error.major_status()),
+        );
+        if let Some(sub_status) = vm_error.sub_status() {
+            self.properties
+                .insert("vm_sub_status".to_string(), format!("{}", sub_status));
+        }
+        self
     }
 }

@@ -27,9 +27,9 @@ use crate::dynamic_field::{DYNAMIC_FIELD_FIELD_STRUCT_NAME, DYNAMIC_FIELD_MODULE
 use crate::effects::TransactionEffects;
 use crate::effects::TransactionEffectsAPI;
 use crate::epoch_data::EpochData;
-use crate::error::ExecutionErrorKind;
 use crate::error::SuiError;
 use crate::error::SuiErrorKind;
+use crate::error::{ErrorContext, ExecutionErrorKind};
 use crate::error::{ExecutionError, SuiResult};
 use crate::gas_coin::GAS;
 use crate::gas_coin::GasCoin;
@@ -1408,7 +1408,7 @@ impl TxContext {
             {
                 return Err(ExecutionError::new_with_source(
                     ExecutionErrorKind::InvariantViolation,
-                    "Immutable fields for TxContext changed",
+                    ErrorContext::from_message("Immutable fields for TxContext changed"),
                 ));
             }
             self.ids_created = other.ids_created;

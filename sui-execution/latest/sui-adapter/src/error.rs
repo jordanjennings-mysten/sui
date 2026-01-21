@@ -9,7 +9,7 @@ use move_core_types::{
     language_storage::ModuleId,
     vm_status::{StatusCode, StatusType},
 };
-use sui_types::error::ExecutionError;
+use sui_types::error::{ErrorContext, ExecutionError};
 use sui_types::execution_status::{ExecutionFailureStatus, MoveLocation, MoveLocationOpt};
 
 pub(crate) fn convert_vm_error_impl(
@@ -76,5 +76,5 @@ pub(crate) fn convert_vm_error_impl(
             StatusType::InvariantViolation => ExecutionFailureStatus::VMInvariantViolation,
         },
     };
-    ExecutionError::new_with_source(kind, error)
+    ExecutionError::new_with_source(kind, ErrorContext::from_vm_error(&error))
 }
