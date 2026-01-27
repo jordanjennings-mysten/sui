@@ -1321,17 +1321,6 @@ impl ExecutionErrorWithContext {
         }
     }
 
-    pub fn from_vm_error(kind: ExecutionErrorKind, vm_error: &VMError) -> Self {
-        let mut context = Self::new(kind);
-        context.source.push(Box::new(vm_error.clone()));
-        context
-    }
-
-    pub fn with_vm_error_properties(mut self, vm_error: &VMError) -> Self {
-        self.source.push(Box::new(vm_error.clone()));
-        self
-    }
-
     pub fn from_message(kind: ExecutionErrorKind, message: &str) -> Self {
         Self {
             source: vec![message.to_string().into()],
