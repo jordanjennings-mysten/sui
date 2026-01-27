@@ -108,7 +108,7 @@ impl executor::Executor for Executor {
         (inner_temp_store, gas_status, effects, vec![], result)
     }
 
-    fn execute_transaction_to_effects2(
+    fn execute_transaction_to_effects_with_error_context(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,

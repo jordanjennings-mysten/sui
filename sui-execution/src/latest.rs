@@ -103,7 +103,7 @@ impl executor::Executor for Executor {
         )
     }
 
-    fn execute_transaction_to_effects2(
+    fn execute_transaction_to_effects_with_error_context(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,

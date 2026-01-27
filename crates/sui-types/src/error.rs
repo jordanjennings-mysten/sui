@@ -1334,28 +1334,9 @@ impl ExecutionErrorWithContext {
     }
 }
 
-impl From<ExecutionErrorWithContext> for ExecutionError {
-    fn from(mut ctx: ExecutionErrorWithContext) -> Self {
-        let source = if ctx.source.is_empty() {
-            None
-        } else if ctx.source.len() == 1 {
-            Some(ctx.source.pop().unwrap())
-        } else {
-            // we have lost the type information here
-            Some(format!("{:?}", ctx.source).into())
-        };
-
-        let mut err = ExecutionError::new(ctx.kind, source);
-        if let Some(cmd) = ctx.command {
-            err = err.with_command_index(cmd);
-        }
-        err
-    }
-}
-
 impl From<ExecutionErrorKind> for ExecutionErrorWithContext {
     fn from(value: ExecutionErrorKind) -> Self {
-        todo!()
+        Self::new(value)
     }
 }
 

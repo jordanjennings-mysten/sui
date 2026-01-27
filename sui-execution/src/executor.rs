@@ -54,7 +54,7 @@ pub trait Executor {
         Result<(), ExecutionError>,
     );
 
-    fn execute_transaction_to_effects2(
+    fn execute_transaction_to_effects_with_error_context(
         &self,
         store: &dyn BackingStore,
         // Configuration
