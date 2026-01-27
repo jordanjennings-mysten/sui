@@ -6,7 +6,7 @@ pub use checked::*;
 
 #[sui_macros::with_checked_arithmetic]
 mod checked {
-    use crate::error::{UserInputError, UserInputResult};
+    use crate::error::{ExecutionErrorTrait, UserInputError, UserInputResult};
     use crate::gas::{self, GasCostSummary, GasUsageReport, SuiGasStatusAPI};
     use crate::gas_model::gas_predicates::{cost_table_for_version, txn_base_cost_as_multiplier};
     use crate::gas_model::units_types::CostTable;
@@ -390,7 +390,7 @@ mod checked {
             &mut self.gas_status
         }
 
-        fn bucketize_computation(&mut self, aborted: Option<bool>) -> Result<(), ExecutionError> {
+        fn bucketize_computation<E: ExecutionErrorTrait>(&mut self, aborted: Option<bool>) -> Result<(), E> {
             let gas_used = self.gas_status.gas_used_pre_gas_price();
             let effective_gas_price = if self
                 .cost_table
@@ -494,7 +494,7 @@ mod checked {
             self.unmetered_storage_rebate = 0;
         }
 
-        fn charge_storage_read(&mut self, size: usize) -> Result<(), ExecutionError> {
+        fn charge_storage_read<E: ExecutionErrorTrait>(&mut self, size: usize) -> Result<(), E> {
             self.gas_status
                 .charge_bytes(size, self.cost_table.object_read_per_byte_cost)
                 .map_err(|e| {
@@ -503,7 +503,7 @@ mod checked {
                 })
         }
 
-        fn charge_publish_package(&mut self, size: usize) -> Result<(), ExecutionError> {
+        fn charge_publish_package<E: ExecutionErrorTrait>(&mut self, size: usize) -> Result<(), E> {
             self.gas_status
                 .charge_bytes(size, self.cost_table.package_publish_per_byte_cost)
                 .map_err(|e| {

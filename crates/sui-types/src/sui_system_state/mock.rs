@@ -16,6 +16,7 @@ use crate::sui_system_state::sui_system_state_inner_v2::{
 use crate::sui_system_state::{SuiSystemState, SuiSystemStateWrapper};
 use crate::{MoveTypeTagTrait, SUI_SYSTEM_STATE_OBJECT_ID};
 use sui_protocol_config::ProtocolConfig;
+use crate::error::ExecutionError;
 
 pub fn validator_set_v1() -> ValidatorSetV1 {
     ValidatorSetV1 {
@@ -124,7 +125,7 @@ pub fn system_state_output_objects(sui_system_state: SuiSystemState) -> Vec<Obje
     let version = sui_system_state.version();
     let system_state_wrapper_object = Object::new_move(
         unsafe {
-            MoveObject::new_from_execution(
+            MoveObject::new_from_execution::<ExecutionError>(
                 MoveObjectType::gas_coin(),
                 // must be true to pass validation
                 true,
@@ -165,7 +166,7 @@ pub fn system_state_output_objects(sui_system_state: SuiSystemState) -> Vec<Obje
     .unwrap();
     let system_state_inner_object = Object::new_move(
         unsafe {
-            MoveObject::new_from_execution(
+            MoveObject::new_from_execution::<ExecutionError>(
                 MoveObjectType::gas_coin(),
                 true,
                 0.into(),

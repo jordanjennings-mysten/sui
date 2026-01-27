@@ -20,6 +20,7 @@ use sui_types::{
     object::{OBJECT_START_VERSION, Object},
 };
 use tracing::error;
+use sui_types::error::{ExecutionError, ExecutionErrorTrait};
 
 /// Encapsulates a system package in the framework
 pub struct SystemPackageMetadata {
@@ -74,7 +75,7 @@ impl SystemPackage {
     }
 
     pub fn genesis_move_package(&self) -> MovePackage {
-        MovePackage::new_system(
+        MovePackage::new_system::<ExecutionError>(
             OBJECT_START_VERSION,
             &self.modules(),
             self.dependencies.iter().copied(),
@@ -82,7 +83,7 @@ impl SystemPackage {
     }
 
     pub fn genesis_object(&self) -> Object {
-        Object::new_system_package(
+        Object::new_system_package::<ExecutionError>(
             &self.modules(),
             OBJECT_START_VERSION,
             self.dependencies.to_vec(),
@@ -195,7 +196,7 @@ pub fn legacy_test_cost() -> InternalGas {
 ///   framework (indicates support for a protocol upgrade without a framework upgrade).
 /// - Returns the digest of the new framework (and version) if it is compatible (indicates
 ///   support for a protocol upgrade with a framework upgrade).
-pub async fn compare_system_package<S: ObjectStore>(
+pub async fn compare_system_package<S: ObjectStore, E: ExecutionErrorTrait>(
     object_store: &S,
     id: &ObjectID,
     modules: &[CompiledModule],
@@ -208,7 +209,7 @@ pub async fn compare_system_package<S: ObjectStore>(
         None => {
             // creating a new framework package--nothing to check
             return Some(
-                Object::new_system_package(
+                Object::new_system_package::<E>(
                     modules,
                     // note: execution_engine assumes any system package with version OBJECT_START_VERSION is freshly created
                     // rather than upgraded
@@ -229,7 +230,7 @@ pub async fn compare_system_package<S: ObjectStore>(
         .try_as_package()
         .expect("Framework not package");
 
-    let mut new_object = Object::new_system_package(
+    let mut new_object = Object::new_system_package::<E>(
         modules,
         // Start at the same version as the current package, and increment if compatibility is
         // successful

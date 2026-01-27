@@ -27,6 +27,7 @@ use sui_types::{
     object::{Data, Object},
     supported_protocol_versions::ProtocolConfig,
 };
+use sui_types::error::ExecutionError;
 
 /// Information about a package in the cache
 pub struct PackageInfo {
@@ -566,7 +567,7 @@ impl PackageRebuilder {
         let max_package_size = protocol_config.max_move_package_size();
 
         // Create a new MovePackage with updated modules and properly generated tables
-        let rebuilt_package = MovePackage::new(
+        let rebuilt_package = MovePackage::new::<ExecutionError>(
             self.package_info.package_id, // Use the package ID directly
             version,
             module_map,

@@ -727,7 +727,7 @@ mod checked {
                 )
                 .expect("System Package Publish must succeed");
             } else {
-                let mut new_package = Object::new_system_package(
+                let mut new_package = Object::new_system_package::<ExecutionError>(
                     &deserialized_modules,
                     version,
                     dependencies,

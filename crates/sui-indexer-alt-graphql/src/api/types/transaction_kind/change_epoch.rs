@@ -8,6 +8,7 @@ use async_graphql::connection::Connection;
 use move_binary_format::CompiledModule;
 use move_binary_format::errors::PartialVMResult;
 use sui_types::digests::TransactionDigest;
+use sui_types::error::ExecutionError;
 use sui_types::object::Object as NativeObject;
 use sui_types::transaction::ChangeEpoch as NativeChangeEpoch;
 
@@ -100,7 +101,7 @@ impl ChangeEpochTransaction {
                         .context("Failed to deserialize system modules")?;
 
                     // Create a native system package object
-                    let native_object = NativeObject::new_system_package(
+                    let native_object = NativeObject::new_system_package::<ExecutionError>(
                         &compiled_modules,
                         *version,
                         deps.clone(),

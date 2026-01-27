@@ -29,8 +29,8 @@ use crate::effects::TransactionEffectsAPI;
 use crate::epoch_data::EpochData;
 use crate::error::SuiError;
 use crate::error::SuiErrorKind;
-use crate::error::{ErrorContext, ExecutionErrorKind};
 use crate::error::{ExecutionError, SuiResult};
+use crate::error::{ExecutionErrorKind, ExecutionErrorWithContext};
 use crate::gas_coin::GAS;
 use crate::gas_coin::GasCoin;
 use crate::governance::STAKED_SUI_STRUCT_NAME;
@@ -1408,7 +1408,10 @@ impl TxContext {
             {
                 return Err(ExecutionError::new_with_source(
                     ExecutionErrorKind::InvariantViolation,
-                    ErrorContext::from_message("Immutable fields for TxContext changed"),
+                    ExecutionErrorWithContext::from_message(
+                        ExecutionErrorKind::InvariantViolation,
+                        "Immutable fields for TxContext changed",
+                    ),
                 ));
             }
             self.ids_created = other.ids_created;

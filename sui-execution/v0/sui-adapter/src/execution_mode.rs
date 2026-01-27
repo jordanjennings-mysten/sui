@@ -7,6 +7,7 @@ use move_core_types::language_storage::TypeTag;
 use sui_types::{
     error::ExecutionError, execution::ExecutionResult, transaction::Argument, transfer::Receiving,
 };
+use sui_types::error::ExecutionErrorWithContext;
 
 pub type TransactionIndex = usize;
 
@@ -15,6 +16,8 @@ pub trait ExecutionMode {
     type ArgumentUpdates;
     /// the gathered results from batched executions
     type ExecutionResults;
+    /// The error type produced during execution
+    type Error;
 
     /// Controls the calling of arbitrary Move functions
     fn allow_arbitrary_function_calls() -> bool;
@@ -55,6 +58,7 @@ pub struct Normal;
 impl ExecutionMode for Normal {
     type ArgumentUpdates = ();
     type ExecutionResults = ();
+    type Error = ExecutionError;
 
     fn allow_arbitrary_function_calls() -> bool {
         false
@@ -101,6 +105,7 @@ pub struct Genesis;
 impl ExecutionMode for Genesis {
     type ArgumentUpdates = ();
     type ExecutionResults = ();
+    type Error = ExecutionError;
 
     fn allow_arbitrary_function_calls() -> bool {
         true
@@ -150,6 +155,7 @@ pub struct System;
 impl ExecutionMode for System {
     type ArgumentUpdates = ();
     type ExecutionResults = ();
+    type Error = ExecutionError;
 
     fn allow_arbitrary_function_calls() -> bool {
         // allows bypassing visibility for system calls
@@ -201,6 +207,7 @@ pub struct DevInspect<const SKIP_ALL_CHECKS: bool>;
 impl<const SKIP_ALL_CHECKS: bool> ExecutionMode for DevInspect<SKIP_ALL_CHECKS> {
     type ArgumentUpdates = Vec<(Argument, Vec<u8>, TypeTag)>;
     type ExecutionResults = Vec<ExecutionResult>;
+    type Error = ExecutionError;
 
     fn allow_arbitrary_function_calls() -> bool {
         SKIP_ALL_CHECKS

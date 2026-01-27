@@ -41,7 +41,7 @@ use sui_types::{
     resolve_address,
     transaction::{self as Tx, ObjectArg},
 };
-
+use sui_types::error::ExecutionError;
 use super::{
     ast::{ModuleAccess as PTBModuleAccess, ParsedPTBCommand, Program},
     ptb::AddressData,
@@ -1288,5 +1288,5 @@ pub async fn resolve_package(
         package.type_origin_table,
         package.linkage_table,
     )
-    .map_err(|e| err!(loc, "{e}"))
+    .map_err(|e: ExecutionError| err!(loc, "{e}"))
 }

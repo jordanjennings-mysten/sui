@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter, Write};
 
 use enum_dispatch::enum_dispatch;
@@ -1209,6 +1210,7 @@ pub struct DryRunTransactionBlockResponse {
     pub balance_changes: Vec<BalanceChange>,
     pub input: SuiTransactionBlockData,
     pub execution_error_source: Option<String>,
+    pub error_properties: Option<BTreeMap<String, String>>,
     // If an input object is congested, suggest a gas price to use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<BigInt<u64>>")]

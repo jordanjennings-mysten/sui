@@ -9,14 +9,15 @@ use move_core_types::{
     language_storage::ModuleId,
     vm_status::{StatusCode, StatusType},
 };
-use sui_types::error::{ErrorContext, ExecutionError};
+use sui_types::error::{ExecutionErrorWithContext, ExecutionError, ExecutionErrorTrait};
 use sui_types::execution_status::{ExecutionFailureStatus, MoveLocation, MoveLocationOpt};
+use crate::execution_mode::ExecutionMode;
 
-pub(crate) fn convert_vm_error_impl(
+pub(crate) fn convert_vm_error_impl<E: ExecutionErrorTrait>(
     error: VMError,
     abort_module_id_relocation_fn: &impl Fn(&ModuleId) -> ModuleId,
     function_name_resolution_fn: &impl Fn(&ModuleId, FunctionDefinitionIndex) -> Option<String>,
-) -> ExecutionError {
+) -> E  {
     let kind = match (error.major_status(), error.sub_status(), error.location()) {
         (StatusCode::EXECUTED, _, _) => {
             // If we have an error the status probably shouldn't ever be Executed
@@ -76,5 +77,5 @@ pub(crate) fn convert_vm_error_impl(
             StatusType::InvariantViolation => ExecutionFailureStatus::VMInvariantViolation,
         },
     };
-    ExecutionError::new_with_source(kind, ErrorContext::from_vm_error(&error))
+    E::new_with_source(kind, error.into())
 }

@@ -84,7 +84,7 @@ use sui_types::move_package::MovePackage;
 use tokio::time::interval;
 use tracing::info;
 use url::Url;
-
+use sui_types::error::ExecutionError;
 use crate::client_commands::{
     SuiClientCommands, USER_AGENT, check_for_unpublished_deps, load_root_pkg_for_publish_upgrade,
     pkg_tree_shake,
@@ -1645,7 +1645,7 @@ async fn resolve_package(reader: &ReadApi, package_id: ObjectID) -> anyhow::Resu
         bail!("Object {} is not a package.", package_id);
     };
 
-    Ok(MovePackage::new(
+    Ok(MovePackage::new::<ExecutionError>(
         package.id,
         package.version,
         package.module_map,

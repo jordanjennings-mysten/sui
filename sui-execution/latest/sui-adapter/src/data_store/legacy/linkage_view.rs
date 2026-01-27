@@ -19,6 +19,7 @@ use sui_types::{
     error::{ExecutionError, SuiError, SuiResult},
     move_package::{MovePackage, TypeOrigin, UpgradeInfo},
 };
+use sui_types::error::ExecutionErrorTrait;
 
 /// Exposes module and linkage resolution to the Move runtime.  The first by delegating to
 /// `resolver` and the second via linkage information that is loaded from a move package.
@@ -109,7 +110,7 @@ impl<'state> LinkageView<'state> {
     /// Set the linkage context to the information based on the linkage and type origin tables from
     /// the `context` package.  Returns the original package ID (aka the runtime ID) of the context
     /// package on success.
-    pub fn set_linkage(&self, context: &MovePackage) -> Result<AccountAddress, ExecutionError> {
+    pub fn set_linkage<E: ExecutionErrorTrait>(&self, context: &MovePackage) -> Result<AccountAddress, E> {
         let Ok(mut linkage_info) = self.linkage_info.try_borrow_mut() else {
             invariant_violation!("Unable to borrow linkage to set")
         };

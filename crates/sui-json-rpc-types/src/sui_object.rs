@@ -240,7 +240,7 @@ impl SuiObjectData {
     ) -> Result<Object, anyhow::Error> {
         let data = match self.bcs {
             Some(SuiRawData::MoveObject(o)) => Data::Move(unsafe {
-                MoveObject::new_from_execution(
+                MoveObject::new_from_execution::<ExecutionError>(
                     o.type_().clone().into(),
                     o.has_public_transfer,
                     o.version,
@@ -249,7 +249,7 @@ impl SuiObjectData {
                     /* system_mutation */ false,
                 )?
             }),
-            Some(SuiRawData::Package(p)) => Data::Package(MovePackage::new(
+            Some(SuiRawData::Package(p)) => Data::Package(MovePackage::new::<ExecutionError>(
                 p.id,
                 self.version,
                 p.module_map,

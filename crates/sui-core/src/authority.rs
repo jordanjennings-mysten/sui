@@ -129,7 +129,7 @@ use sui_types::effects::{
     InputConsensusObject, SignedTransactionEffects, TransactionEffects, TransactionEffectsAPI,
     TransactionEvents, VerifiedSignedTransactionEffects,
 };
-use sui_types::error::{ExecutionError, SuiErrorKind, UserInputError};
+use sui_types::error::{ExecutionError, ExecutionErrorTrait, SuiErrorKind, UserInputError};
 use sui_types::event::{Event, EventID};
 use sui_types::executable_transaction::VerifiedExecutableTransaction;
 use sui_types::gas::{GasCostSummary, SuiGasStatus};
@@ -2068,29 +2068,63 @@ impl AuthorityState {
 
         #[allow(unused_mut)]
         let (inner_temp_store, _, mut effects, timings, execution_error_opt) =
-            epoch_store.executor().execute_transaction_to_effects(
-                &tracking_store,
-                protocol_config,
-                self.metrics.limits_metrics.clone(),
-                // TODO: would be nice to pass the whole NodeConfig here, but it creates a
-                // cyclic dependency w/ sui-adapter
-                self.config
-                    .expensive_safety_check_config
-                    .enable_deep_per_tx_sui_conservation_check(),
-                execution_params,
-                &epoch_store.epoch_start_config().epoch_data().epoch_id(),
-                epoch_store
-                    .epoch_start_config()
-                    .epoch_data()
-                    .epoch_start_timestamp(),
-                input_objects,
-                gas_data,
-                gas_status,
-                kind,
-                signer,
-                tx_digest,
-                &mut None,
-            );
+            if self.is_fullnode(epoch_store) {
+                epoch_store.executor().execute_transaction_to_effects(
+                    &tracking_store,
+                    protocol_config,
+                    self.metrics.limits_metrics.clone(),
+                    // TODO: would be nice to pass the whole NodeConfig here, but it creates a
+                    // cyclic dependency w/ sui-adapter
+                    self.config
+                        .expensive_safety_check_config
+                        .enable_deep_per_tx_sui_conservation_check(),
+                    execution_params,
+                    &epoch_store.epoch_start_config().epoch_data().epoch_id(),
+                    epoch_store
+                        .epoch_start_config()
+                        .epoch_data()
+                        .epoch_start_timestamp(),
+                    input_objects,
+                    gas_data,
+                    gas_status,
+                    kind,
+                    signer,
+                    tx_digest,
+                    &mut None,
+                )
+            } else {
+                let (inner_temp_store, gas_status, mut effects, timings, execution_error_opt) =
+                    epoch_store.executor().execute_transaction_to_effects2(
+                        &tracking_store,
+                        protocol_config,
+                        self.metrics.limits_metrics.clone(),
+                        // TODO: would be nice to pass the whole NodeConfig here, but it creates a
+                        // cyclic dependency w/ sui-adapter
+                        self.config
+                            .expensive_safety_check_config
+                            .enable_deep_per_tx_sui_conservation_check(),
+                        execution_params,
+                        &epoch_store.epoch_start_config().epoch_data().epoch_id(),
+                        epoch_store
+                            .epoch_start_config()
+                            .epoch_data()
+                            .epoch_start_timestamp(),
+                        input_objects,
+                        gas_data,
+                        gas_status,
+                        kind,
+                        signer,
+                        tx_digest,
+                        &mut None,
+                    );
+                (
+                    inner_temp_store,
+                    gas_status,
+                    effects,
+                    timings,
+                    execution_error_opt.map_err(Into::into),
+                )
+            };
 
         if !self
             .execution_scheduler
@@ -2458,6 +2492,9 @@ impl AuthorityState {
             })
             .collect();
 
+        // try downcast to error context to get properties
+        let error_properties = None;
+
         let execution_error_source = execution_error
             .as_ref()
             .err()
@@ -2488,6 +2525,7 @@ impl AuthorityState {
                 object_changes,
                 balance_changes,
                 execution_error_source,
+                error_properties,
             },
             written_with_kind,
             effects,
@@ -5316,7 +5354,7 @@ impl AuthorityState {
                     None => modules,
                 };
 
-            let Some(obj_ref) = sui_framework::compare_system_package(
+            let Some(obj_ref) = sui_framework::compare_system_package::<_, ExecutionError>(
                 &self.get_object_store(),
                 &system_package.id,
                 &modules,
@@ -5389,7 +5427,7 @@ impl AuthorityState {
                 .map(|m| CompiledModule::deserialize_with_config(m, binary_config).unwrap())
                 .collect();
 
-            let new_object = Object::new_system_package(
+            let new_object = Object::new_system_package::<ExecutionError>(
                 &modules,
                 system_package_ref.1,
                 dependencies.clone(),

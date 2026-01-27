@@ -22,9 +22,7 @@ use crate::accumulator_root::AccumulatorValue;
 use crate::base_types::{FullObjectID, FullObjectRef, MoveObjectType, ObjectIDParseError};
 use crate::coin::{Coin, CoinMetadata, TreasuryCap};
 use crate::crypto::{default_hash, deterministic_random_account_key};
-use crate::error::{
-    ExecutionError, ExecutionErrorKind, SuiErrorKind, UserInputError, UserInputResult,
-};
+use crate::error::{ExecutionError, ExecutionErrorKind, ExecutionErrorTrait, SuiErrorKind, UserInputError, UserInputResult};
 use crate::error::{SuiError, SuiResult};
 use crate::gas_coin::GAS;
 use crate::is_system_package;
@@ -79,14 +77,14 @@ impl MoveObject {
     /// This function should ONLY be called if has_public_transfer has been determined by the type_.
     /// Yes, this is a bit of an abuse of the `unsafe` marker, but bad things will happen if this
     /// is inconsistent
-    pub unsafe fn new_from_execution(
+    pub unsafe fn new_from_execution<E: ExecutionErrorTrait>(
         type_: MoveObjectType,
         has_public_transfer: bool,
         version: SequenceNumber,
         contents: Vec<u8>,
         protocol_config: &ProtocolConfig,
         system_mutation: bool,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, E> {
         let bound = if protocol_config.allow_unbounded_system_objects() && system_mutation {
             if contents.len() as u64 > protocol_config.max_move_object_size() {
                 debug_fatal!(
@@ -108,7 +106,7 @@ impl MoveObject {
                 version,
                 contents,
                 bound,
-            )
+            ).map_err(|e| e.into())
         }
     }
 
@@ -736,7 +734,7 @@ impl Object {
         dependencies: impl IntoIterator<Item = &'p MovePackage>,
     ) -> Result<Self, ExecutionError> {
         Ok(Self::new_package_from_data(
-            Data::Package(MovePackage::new_initial(
+            Data::Package(MovePackage::new_initial::<ExecutionError>(
                 modules,
                 protocol_config,
                 dependencies,
@@ -754,7 +752,7 @@ impl Object {
         dependencies: impl IntoIterator<Item = &'p MovePackage>,
     ) -> Result<Self, ExecutionError> {
         Ok(Self::new_package_from_data(
-            Data::Package(previous_package.new_upgraded(
+            Data::Package(previous_package.new_upgraded::<ExecutionError>(
                 new_package_id,
                 modules,
                 protocol_config,
@@ -776,14 +774,14 @@ impl Object {
 
     /// Create a system package which is not subject to size limits. Panics if the object ID is not
     /// a known system package.
-    pub fn new_system_package(
+    pub fn new_system_package<E: ExecutionErrorTrait>(
         modules: &[CompiledModule],
         version: SequenceNumber,
         dependencies: Vec<ObjectID>,
         previous_transaction: TransactionDigest,
     ) -> Self {
         let ret = Self::new_package_from_data(
-            Data::Package(MovePackage::new_system(version, modules, dependencies)),
+            Data::Package(MovePackage::new_system::<E>(version, modules, dependencies)),
             previous_transaction,
         );
 

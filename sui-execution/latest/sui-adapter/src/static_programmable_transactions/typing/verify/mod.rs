@@ -17,7 +17,7 @@ pub mod private_entry_arguments;
 pub fn transaction<Mode: ExecutionMode>(
     env: &env::Env,
     ast: &mut T::Transaction,
-) -> Result<(), ExecutionError> {
+) -> Result<(), Mode::Error> {
     input_arguments::verify::<Mode>(env, &*ast)?;
     move_functions::verify::<Mode>(env, &*ast)?;
     memory_safety::verify(env, &*ast)?;

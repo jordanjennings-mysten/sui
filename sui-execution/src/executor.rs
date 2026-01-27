@@ -21,6 +21,7 @@ use sui_types::{
     metrics::LimitsMetrics,
     transaction::{CheckedInputObjects, ProgrammableTransaction, TransactionKind},
 };
+use sui_types::error::ExecutionErrorWithContext;
 
 /// Abstracts over access to the VM across versions of the execution layer.
 pub trait Executor {
@@ -51,6 +52,35 @@ pub trait Executor {
         TransactionEffects,
         Vec<ExecutionTiming>,
         Result<(), ExecutionError>,
+    );
+
+    fn execute_transaction_to_effects2(
+        &self,
+        store: &dyn BackingStore,
+        // Configuration
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        enable_expensive_checks: bool,
+        execution_params: ExecutionOrEarlyError,
+        // Epoch
+        epoch_id: &EpochId,
+        epoch_timestamp_ms: u64,
+        // Transaction Inputs
+        input_objects: CheckedInputObjects,
+        // Gas related
+        gas: GasData,
+        gas_status: SuiGasStatus,
+        // Transaction
+        transaction_kind: TransactionKind,
+        transaction_signer: SuiAddress,
+        transaction_digest: TransactionDigest,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> (
+        InnerTemporaryStore,
+        SuiGasStatus,
+        TransactionEffects,
+        Vec<ExecutionTiming>,
+        Result<(), ExecutionErrorWithContext>,
     );
 
     fn dev_inspect_transaction(

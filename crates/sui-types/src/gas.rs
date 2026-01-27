@@ -27,13 +27,14 @@ pub mod checked {
     use serde::{Deserialize, Serialize};
     use serde_with::serde_as;
     use sui_protocol_config::ProtocolConfig;
+    use crate::error::ExecutionErrorTrait;
 
     #[enum_dispatch]
     pub trait SuiGasStatusAPI {
         fn is_unmetered(&self) -> bool;
         fn move_gas_status(&self) -> &GasStatus;
         fn move_gas_status_mut(&mut self) -> &mut GasStatus;
-        fn bucketize_computation(&mut self, aborted: Option<bool>) -> Result<(), ExecutionError>;
+        fn bucketize_computation<E: ExecutionErrorTrait>(&mut self, aborted: Option<bool>) -> Result<(), E>;
         fn summary(&self) -> GasCostSummary;
         fn gas_budget(&self) -> u64;
         fn gas_price(&self) -> u64;
@@ -43,8 +44,8 @@ pub mod checked {
         fn unmetered_storage_rebate(&self) -> u64;
         fn gas_used(&self) -> u64;
         fn reset_storage_cost_and_rebate(&mut self);
-        fn charge_storage_read(&mut self, size: usize) -> Result<(), ExecutionError>;
-        fn charge_publish_package(&mut self, size: usize) -> Result<(), ExecutionError>;
+        fn charge_storage_read<E: ExecutionErrorTrait>(&mut self, size: usize) -> Result<(), E>;
+        fn charge_publish_package<E: ExecutionErrorTrait>(&mut self, size: usize) -> Result<(), E>;
         fn track_storage_mutation(
             &mut self,
             object_id: ObjectID,

@@ -125,7 +125,8 @@ where
     u64: TryInto<T>,
 {
     let x = cursor.read_uleb128_as_u64().map_err(|_| {
-        PartialVMError::new(StatusCode::MALFORMED).with_message("Bad Uleb".to_string())
+        let pos = cursor.cursor.position();
+        PartialVMError::new(StatusCode::MALFORMED).with_message(format!("Bad Uleb at {}", pos))
     })?;
     if x > max {
         return Err(PartialVMError::new(StatusCode::MALFORMED)
@@ -2166,7 +2167,7 @@ impl<'a, 'b> VersionedBinary<'a, 'b> {
                 }
                 Err(MagicError::BadNumber) => {
                     return Err(PartialVMError::new(StatusCode::BAD_MAGIC)
-                        .with_message("Unexpected binary header".to_string()));
+                        .with_message(format!("Unexpected binary header")));
                 }
             }
         };

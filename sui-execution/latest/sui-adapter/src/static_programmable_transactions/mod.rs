@@ -44,7 +44,7 @@ pub fn execute<Mode: ExecutionMode>(
     withdrawal_compatibility_inputs: Option<Vec<bool>>,
     txn: ProgrammableTransaction,
     trace_builder_opt: &mut Option<MoveTraceBuilder>,
-) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
+) -> ResultWithTimings<Mode::ExecutionResults, Mode::Error> {
     let package_store = CachedPackageStore::new(Box::new(package_store));
     let linkage_analysis =
         LinkageAnalyzer::new::<Mode>(protocol_config).map_err(|e| (e, vec![]))?;

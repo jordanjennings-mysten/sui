@@ -3,8 +3,8 @@
 
 use move_core_types::language_storage::TypeTag;
 use move_vm_types::loaded_data::runtime_types::Type;
-use sui_types::error::ExecutionError;
+use sui_types::error::{ExecutionError, ExecutionErrorTrait};
 
 pub trait TypeTagResolver {
-    fn get_type_tag(&self, type_: &Type) -> Result<TypeTag, ExecutionError>;
+    fn get_type_tag<E: ExecutionErrorTrait>(&self, type_: &Type) -> Result<TypeTag, E>;
 }

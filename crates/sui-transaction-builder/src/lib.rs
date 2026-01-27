@@ -24,7 +24,7 @@ use sui_protocol_config::ProtocolConfig;
 use sui_types::base_types::{
     FullObjectRef, ObjectID, ObjectInfo, ObjectRef, ObjectType, SuiAddress,
 };
-use sui_types::error::UserInputError;
+use sui_types::error::{ExecutionError, UserInputError};
 use sui_types::gas_coin::GasCoin;
 use sui_types::governance::{ADD_STAKE_MUL_COIN_FUN_NAME, WITHDRAW_STAKE_FUN_NAME};
 use sui_types::move_package::MovePackage;
@@ -462,7 +462,7 @@ impl TransactionBuilder {
                 package_id
             );
         };
-        let package: MovePackage = MovePackage::new(
+        let package: MovePackage = MovePackage::new::<ExecutionError>(
             package.id,
             object.version,
             package.module_map,

@@ -30,7 +30,7 @@ use serde_with::serde_as;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 use sui_protocol_config::ProtocolConfig;
-
+use crate::error::ExecutionErrorTrait;
 // TODO: robust MovePackage tests
 // #[cfg(test)]
 // #[path = "unit_tests/move_package.rs"]
@@ -188,14 +188,14 @@ pub struct UpgradeReceipt {
 impl MovePackage {
     /// Create a package with all required data (including serialized modules, type origin and
     /// linkage tables) already supplied.
-    pub fn new(
+    pub fn new<E: ExecutionErrorTrait>(
         id: ObjectID,
         version: SequenceNumber,
         module_map: BTreeMap<String, Vec<u8>>,
         max_move_package_size: u64,
         type_origin_table: Vec<TypeOrigin>,
         linkage_table: BTreeMap<ObjectID, UpgradeInfo>,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, E> {
         let pkg = Self {
             id,
             version,
@@ -260,11 +260,11 @@ impl MovePackage {
 
     /// Create an initial version of the package along with this version's type origin and linkage
     /// tables.
-    pub fn new_initial<'p>(
+    pub fn new_initial<'p, E: ExecutionErrorTrait>(
         modules: &[CompiledModule],
         protocol_config: &ProtocolConfig,
         transitive_dependencies: impl IntoIterator<Item = &'p MovePackage>,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, E> {
         let module = modules
             .first()
             .expect("Tried to build a Move package from an empty iterator of Compiled modules");
@@ -284,19 +284,19 @@ impl MovePackage {
 
     /// Create an upgraded version of the package along with this version's type origin and linkage
     /// tables.
-    pub fn new_upgraded<'p>(
+    pub fn new_upgraded<'p, E: ExecutionErrorTrait>(
         &self,
         storage_id: ObjectID,
         modules: &[CompiledModule],
         protocol_config: &ProtocolConfig,
         transitive_dependencies: impl IntoIterator<Item = &'p MovePackage>,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, E> {
         let module = modules
             .first()
             .expect("Tried to build a Move package from an empty iterator of Compiled modules");
         let runtime_id = ObjectID::from(*module.address());
         let type_origin_table =
-            build_upgraded_type_origin_table(self, modules, storage_id, protocol_config)?;
+            build_upgraded_type_origin_table::<E>(self, modules, storage_id, protocol_config)?;
         let mut new_version = self.version();
         new_version.increment();
         Self::from_module_iter_with_type_origin_table(
@@ -310,7 +310,7 @@ impl MovePackage {
         )
     }
 
-    pub fn new_system(
+    pub fn new_system<E: ExecutionErrorTrait>(
         version: SequenceNumber,
         modules: &[CompiledModule],
         dependencies: impl IntoIterator<Item = ObjectID>,
@@ -350,7 +350,7 @@ impl MovePackage {
             (name, bytes)
         }));
 
-        Self::new(
+        Self::new::<E>(
             storage_id,
             version,
             module_map,
@@ -361,7 +361,7 @@ impl MovePackage {
         .expect("System packages are not subject to a size limit")
     }
 
-    fn from_module_iter_with_type_origin_table<'p>(
+    fn from_module_iter_with_type_origin_table<'p, E: ExecutionErrorTrait>(
         storage_id: ObjectID,
         self_id: ObjectID,
         version: SequenceNumber,
@@ -369,7 +369,7 @@ impl MovePackage {
         protocol_config: &ProtocolConfig,
         type_origin_table: Vec<TypeOrigin>,
         transitive_dependencies: impl IntoIterator<Item = &'p MovePackage>,
-    ) -> Result<Self, ExecutionError> {
+    ) -> Result<Self, E> {
         let mut module_map = BTreeMap::new();
         let mut immediate_dependencies = BTreeSet::new();
 
@@ -760,12 +760,12 @@ fn build_initial_type_origin_table(modules: &[CompiledModule]) -> Vec<TypeOrigin
         .collect()
 }
 
-fn build_upgraded_type_origin_table(
+fn build_upgraded_type_origin_table<E: ExecutionErrorTrait>(
     predecessor: &MovePackage,
     modules: &[CompiledModule],
     storage_id: ObjectID,
     protocol_config: &ProtocolConfig,
-) -> Result<Vec<TypeOrigin>, ExecutionError> {
+) -> Result<Vec<TypeOrigin>, E> {
     let mut new_table = vec![];
     let mut existing_table = predecessor.type_origin_map();
     for m in modules {
@@ -802,13 +802,13 @@ fn build_upgraded_type_origin_table(
 
     if !existing_table.is_empty() {
         if protocol_config.missing_type_is_compatibility_error() {
-            Err(ExecutionError::from_kind(
+            Err(E::from_kind(
                 ExecutionErrorKind::PackageUpgradeError {
                     upgrade_error: PackageUpgradeError::IncompatibleUpgrade,
                 },
             ))
         } else {
-            Err(ExecutionError::invariant_violation(
+            Err(E::invariant_violation(
                 "Package upgrade missing type from previous version.",
             ))
         }
