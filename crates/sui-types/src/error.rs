@@ -11,7 +11,7 @@ use crate::{
     object::Owner,
 };
 
-use move_binary_format::errors::VMError;
+use itertools::Itertools;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt::Debug};
@@ -1098,9 +1098,9 @@ type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 pub type ExecutionErrorKind = ExecutionFailureStatus;
 
-// Use ExecutionError if you are unsure.
+// Use ExecutionError impl to limit error overhead.
 pub trait ExecutionErrorTrait:
-    std::fmt::Debug + std::fmt::Display + std::error::Error + Send + Sync + From<ExecutionErrorKind> + From<ExecutionError>
+    From<ExecutionErrorKind> + From<ExecutionError> + Debug + std::error::Error + Send + Sync
 {
     fn kind(&self) -> &ExecutionErrorKind;
     fn command(&self) -> Option<CommandIndex>;
@@ -1282,14 +1282,13 @@ impl ErrorCategory {
     }
 }
 
-use itertools::Itertools;
 
 impl std::fmt::Display for ExecutionErrorWithContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "Error Context: {}",
-            self.source.iter().map(|e| e.to_string()).join(", ")
+            self.source.iter().map(|e| e.to_string()).join("\n")
         )
     }
 }
@@ -1299,7 +1298,7 @@ impl std::fmt::Debug for ExecutionErrorWithContext {
         write!(
             f,
             "Error Context: {}",
-            self.source.iter().map(|e| e.to_string()).join(", ")
+            self.source.iter().map(|e| e.to_string()).join("\n")
         )
     }
 }

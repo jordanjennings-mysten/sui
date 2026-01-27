@@ -15,7 +15,6 @@ pub trait ExecutionMode {
     type ArgumentUpdates;
     /// the gathered results from batched executions
     type ExecutionResults;
-    /// The error type produced during execution
 
     /// Controls the calling of arbitrary Move functions
     fn allow_arbitrary_function_calls() -> bool;
