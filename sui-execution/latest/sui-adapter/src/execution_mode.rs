@@ -138,6 +138,8 @@ impl ExecutionMode for Normal {
     }
 }
 
+// Execution mode for full node execution, which is similar to normal execution but uses
+// ExecutionErrorWithContext for better error reporting.
 #[derive(Copy, Clone)]
 pub struct FullNode;
 
