@@ -44,4 +44,6 @@ cat config/external.aliases
 
 echo ""
 echo "client config:"
-sed 's/active_address:.*$/active_address: <REDACTED>/g' config/client.yaml
+sed 's|  File: .*|  File: <SANDBOX_DIR>/config/sui.keystore|g' config/client.yaml \
+  | sed 's|  External: .*|  External: <SANDBOX_DIR>/config/external.keystore|g' \
+  | sed 's/active_address:.*$/active_address: <REDACTED>/g'
