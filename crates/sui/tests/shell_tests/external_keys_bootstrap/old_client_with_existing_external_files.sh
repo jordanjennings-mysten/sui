@@ -28,6 +28,7 @@ export SUI_CONFIG_DIR="$PWD/config"
 
 set -o pipefail
 sui external-keys list-keys missing-signer 2>&1 \
+  | sed 's/program not found.*/<REDACTED>/g' \
   | sed 's/No such file or directory (os error 2)/<REDACTED>/g'
 echo "exit_code: $?"
 
