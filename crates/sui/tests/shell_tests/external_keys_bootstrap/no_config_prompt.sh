@@ -7,6 +7,7 @@ export SUI_CONFIG_DIR="$PWD/config"
 
 set -o pipefail
 echo "" | sui external-keys list-keys missing-signer 2>&1 \
+  | sed 's|No sui config found in `.*`, create one \[Y/n\]\?|No sui config found in `<SANDBOX_DIR>/config/client.yaml`, create one [Y/n]?|g' \
   | sed 's/Generated new keypair.*$/Generated new keypair <REDACTED>/g' \
   | sed 's/recovery phrase : \[.*\]/recovery phrase : <REDACTED>/g' \
   | sed 's/No such file or directory (os error 2)/<REDACTED>/g'
