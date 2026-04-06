@@ -20,6 +20,5 @@ ls config
 
 echo ""
 echo "client config:"
-sed 's|  File: .*|  File: <SANDBOX_DIR>/config/sui.keystore|g' config/client.yaml \
-  | sed 's|  External: .*|  External: <SANDBOX_DIR>/config/external.keystore|g' \
+sed 's|  External: .*|  External: <SANDBOX_DIR>/config/external.keystore|g' config/client.yaml \
   | sed 's/active_address:.*$/active_address: <REDACTED>/g'

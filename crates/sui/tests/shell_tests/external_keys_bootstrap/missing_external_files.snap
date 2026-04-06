@@ -1,7 +1,5 @@
 ---
 source: crates/sui/tests/shell_tests.rs
-expression: result
-input_file: crates/sui/tests/shell_tests/external_keys_bootstrap/missing_external_files.sh
 ---
 ----- script -----
 # Copyright (c) Mysten Labs, Inc.
@@ -25,8 +23,7 @@ ls config
 
 echo ""
 echo "client config:"
-sed 's|  File: .*|  File: <SANDBOX_DIR>/config/sui.keystore|g' config/client.yaml \
-  | sed 's|  External: .*|  External: <SANDBOX_DIR>/config/external.keystore|g' \
+sed 's|  External: .*|  External: <SANDBOX_DIR>/config/external.keystore|g' config/client.yaml \
   | sed 's/active_address:.*$/active_address: <REDACTED>/g'
 
 ----- results -----
@@ -46,7 +43,7 @@ client config:
 keystore:
   File: "./sui.keystore"
 external_keys:
-  External: "config/external.keystore"
+  External: <SANDBOX_DIR>/config/external.keystore
 envs:
   - alias: testnet
     rpc: "https://fullnode.testnet.sui.io:443"
